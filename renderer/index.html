@@ -17,6 +17,7 @@
         <span id="clock">--:--:--</span>
       </span>
       <span id="header-right">
+        <button type="button" id="src-btn" title="数据来源">东财</button>
         <button type="button" id="theme-btn" title="切换风格">
           <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="4"></circle>
@@ -26,7 +27,7 @@
             <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4 7 7 0 0 0 20 14.5z"></path>
           </svg>
         </button>
-        <span id="status">穿透</span>
+        <span id="status">可交互</span>
       </span>
     </div>
     <div id="hint">左键看分时 · 右键调顺序 · 拖动窗口</div>
@@ -48,6 +49,11 @@
       </div>
       <canvas id="chart"></canvas>
     </div>
+  </div>
+  <div id="src-menu" hidden>
+    <button type="button" data-provider="eastmoney">东方财富</button>
+    <button type="button" data-provider="tencent">腾讯财经</button>
+    <button type="button" data-provider="sina">新浪财经</button>
   </div>
   <div id="ctx-menu" hidden>
     <button type="button" data-action="top">置顶</button>

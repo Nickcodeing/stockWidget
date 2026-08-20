@@ -81,6 +81,9 @@ tickClock();
 setInterval(tickClock, 1000);
 
 const themeBtn = document.getElementById('theme-btn');
+const srcBtn = document.getElementById('src-btn');
+const srcMenuEl = document.getElementById('src-menu');
+const hintEl = document.getElementById('hint');
 const marketCnBtn = document.getElementById('market-cn');
 const marketUsBtn = document.getElementById('market-us');
 const chartMetaEl = document.getElementById('chart-meta');
@@ -92,6 +95,68 @@ const chartEl = document.getElementById('chart');
 const chartTitleEl = document.getElementById('chart-title');
 const ctx = chartEl.getContext('2d');
 let currentTheme = 'sun';
+let currentProvider = 'eastmoney';
+const PROVIDERS = [
+  { id: 'eastmoney', label: '东方财富', short: '东财' },
+  { id: 'tencent', label: '腾讯财经', short: '腾讯' },
+  { id: 'sina', label: '新浪财经', short: '新浪' }
+];
+const DEFAULT_HINT = '左键看分时 · 右键调顺序 · 拖动窗口';
+
+function providerMeta(id) {
+  return PROVIDERS.find((p) => p.id === id) || PROVIDERS[0];
+}
+
+function hideSrcMenu() {
+  srcMenuEl.hidden = true;
+}
+
+function applyProvider(id, label, short) {
+  const meta = providerMeta(id);
+  currentProvider = meta.id;
+  srcBtn.textContent = short || meta.short;
+  srcBtn.title = `数据来源：${label || meta.label}（点击切换）`;
+  srcMenuEl.querySelectorAll('button[data-provider]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.provider === currentProvider);
+  });
+}
+
+function applyHint(suggestSwitch) {
+  if (suggestSwitch) {
+    hintEl.textContent = '暂无行情，点击切换数据来源';
+    hintEl.classList.add('switch-hint');
+    hintEl.title = '当前数据源没有返回行情，可改用腾讯或新浪试试';
+  } else {
+    hintEl.textContent = DEFAULT_HINT;
+    hintEl.classList.remove('switch-hint');
+    hintEl.title = '';
+  }
+}
+
+function showSrcMenu() {
+  hideCtxMenu();
+  srcMenuEl.hidden = false;
+  const rect = srcBtn.getBoundingClientRect();
+  const pad = 8;
+  const x = Math.min(rect.left, window.innerWidth - srcMenuEl.offsetWidth - pad);
+  const y = Math.min(rect.bottom + 4, window.innerHeight - srcMenuEl.offsetHeight - pad);
+  srcMenuEl.style.left = `${Math.max(pad, x)}px`;
+  srcMenuEl.style.top = `${Math.max(pad, y)}px`;
+}
+
+function onProviderClick(id) {
+  if (!id) return;
+  hideSrcMenu();
+  if (id === currentProvider) return;
+  applyProvider(id);
+  applyHint(false);
+  quotes = [];
+  trends = null;
+  render();
+  renderIndex(null);
+  drawChart();
+  window.stockApi.setQuoteProvider(id);
+}
 
 function applyTheme(theme) {
   currentTheme = theme === 'moon' ? 'moon' : 'sun';
@@ -120,6 +185,31 @@ function applyMarket(market) {
 
 themeBtn.addEventListener('mousedown', (e) => {
   e.stopPropagation();
+});
+
+srcBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+srcMenuEl.addEventListener('mousedown', (e) => e.stopPropagation());
+hintEl.addEventListener('mousedown', (e) => {
+  if (hintEl.classList.contains('switch-hint')) e.stopPropagation();
+});
+
+srcBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (srcMenuEl.hidden) showSrcMenu();
+  else hideSrcMenu();
+});
+
+srcMenuEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-provider]');
+  if (!btn) return;
+  e.stopPropagation();
+  onProviderClick(btn.dataset.provider);
+});
+
+hintEl.addEventListener('click', (e) => {
+  if (!hintEl.classList.contains('switch-hint')) return;
+  e.stopPropagation();
+  showSrcMenu();
 });
 
 themeBtn.addEventListener('click', (e) => {
@@ -189,6 +279,14 @@ function renderIndex(index) {
   indexRowEl.classList.toggle('active', selectedSecId === indexSecId());
 }
 
+function isMissingQuote(q) {
+  return !!(q && q.missing) || q?.price == null || q?.price === '-' || !Number.isFinite(Number(q?.price));
+}
+
+function listItemCount() {
+  return quotes.length + (quotes.some(isMissingQuote) ? 1 : 0);
+}
+
 function render() {
   listEl.innerHTML = '';
   quotes.forEach((q) => {
@@ -207,7 +305,14 @@ function render() {
     listEl.appendChild(row);
   });
 
-  const maxScroll = Math.max(0, quotes.length - VISIBLE);
+  if (quotes.some(isMissingQuote)) {
+    const hint = document.createElement('div');
+    hint.className = 'row missing-hint';
+    hint.textContent = '部分数据未查询到';
+    listEl.appendChild(hint);
+  }
+
+  const maxScroll = Math.max(0, listItemCount() - VISIBLE);
   scrollIndex = Math.min(scrollIndex, maxScroll);
   listEl.style.transform = `translateY(${-scrollIndex * ROW_H}px)`;
 }
@@ -231,6 +336,36 @@ function timeToX(time) {
   return 0.5 + Math.max(0, Math.min(1, (t - pm) / 120)) * 0.5;
 }
 
+function nameForSecId(secId) {
+  if (!secId) return indexSpec.name;
+  if (secId === indexSpec.secId || secId === indexSpec.code) return indexSpec.name;
+  const q = quotes.find((item) => rowSecId(item) === secId);
+  if (q) return q.name || q.code;
+  if (trends && (trends.secId === secId || trends.code === indexSpec.code)) {
+    return trends.name || indexSpec.name;
+  }
+  return indexSpec.name;
+}
+
+function flashChart() {
+  const head = document.getElementById('chart-head');
+  [head, chartEl].forEach((el) => {
+    if (!el) return;
+    el.classList.remove('refreshing');
+    void el.offsetWidth;
+    el.classList.add('refreshing');
+  });
+}
+
+function selectLocal(secId) {
+  selectedSecId = secId;
+  if (trends && trends.secId !== secId) trends = null;
+  render();
+  indexRowEl.classList.toggle('active', selectedSecId === indexSecId());
+  drawChart();
+  flashChart();
+}
+
 function drawChart() {
   const dpr = window.devicePixelRatio || 1;
   const width = chartEl.clientWidth || 300;
@@ -240,12 +375,11 @@ function drawChart() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  const points = trends?.points || [];
-  const preClose = Number(trends?.preClose);
-  const trendName = trends?.secId === indexSpec.secId || trends?.code === indexSpec.code
-    ? indexSpec.name
-    : (trends?.name || indexSpec.name);
-  chartTitleEl.textContent = `分时 · ${trendName}`;
+  const active = trends && trends.secId === selectedSecId ? trends : null;
+  const points = active?.points || [];
+  const preClose = Number(active?.preClose);
+  const trendName = nameForSecId(selectedSecId);
+  chartTitleEl.textContent = `分时 · ${trendName || '--'}`;
 
   if (!points.length || !Number.isFinite(preClose)) {
     ctx.fillStyle = 'rgba(234, 238, 245, 0.45)';
@@ -256,8 +390,9 @@ function drawChart() {
   }
 
   const prices = points.map((p) => p.price);
-  let min = Math.min(preClose, ...prices);
-  let max = Math.max(preClose, ...prices);
+  const avgs = points.map((p) => p.avg).filter((n) => Number.isFinite(n));
+  let min = Math.min(preClose, ...prices, ...avgs);
+  let max = Math.max(preClose, ...prices, ...avgs);
   if (min === max) {
     min -= 1;
     max += 1;
@@ -354,6 +489,8 @@ function drawChart() {
 window.stockApi.onQuotesUpdate((data) => {
   if (data.market) applyMarket(data.market);
   if (data.indexSpec) indexSpec = data.indexSpec;
+  if (data.quoteProvider) applyProvider(data.quoteProvider, data.quoteProviderLabel, data.quoteProviderShort);
+  applyHint(!!data.suggestSwitch);
   quotes = data.quotes || [];
   if (data.selectedSecId) selectedSecId = data.selectedSecId;
   trends = data.trends || trends;
@@ -373,6 +510,7 @@ function resetPointerState() {
   dragMoved = false;
   pendingSecId = null;
   hideCtxMenu();
+  hideSrcMenu();
   panelEl.style.cursor = 'grab';
   window.stockApi.setPointerOver(false);
 }
@@ -396,7 +534,7 @@ window.stockApi.onWidgetReset(() => {
 
 window.addEventListener('wheel', (e) => {
   e.preventDefault();
-  const maxScroll = Math.max(0, quotes.length - VISIBLE);
+  const maxScroll = Math.max(0, listItemCount() - VISIBLE);
   if (maxScroll === 0) return;
   scrollIndex += e.deltaY > 0 ? 1 : -1;
   scrollIndex = Math.max(0, Math.min(maxScroll, scrollIndex));
@@ -459,8 +597,21 @@ ctxMenuEl.addEventListener('mouseleave', (e) => {
   if (!dragging) syncPointerOver();
 });
 
+srcMenuEl.addEventListener('mouseenter', () => {
+  hover = true;
+  syncPointerOver();
+});
+
+srcMenuEl.addEventListener('mouseleave', (e) => {
+  if (panelEl.contains(e.relatedTarget)) return;
+  hideSrcMenu();
+  hover = false;
+  if (!dragging) syncPointerOver();
+});
+
 window.addEventListener('mousedown', (e) => {
   if (!ctxMenuEl.hidden && !ctxMenuEl.contains(e.target)) hideCtxMenu();
+  if (!srcMenuEl.hidden && !srcMenuEl.contains(e.target) && e.target !== srcBtn) hideSrcMenu();
 }, true);
 
 panelEl.addEventListener('mouseenter', () => {
@@ -469,14 +620,20 @@ panelEl.addEventListener('mouseenter', () => {
 });
 
 panelEl.addEventListener('mouseleave', (e) => {
-  if (ctxMenuEl.contains(e.relatedTarget)) return;
+  if (ctxMenuEl.contains(e.relatedTarget) || srcMenuEl.contains(e.relatedTarget)) return;
   hover = false;
-  if (!dragging && ctxMenuEl.hidden) syncPointerOver();
+  if (!dragging && ctxMenuEl.hidden && srcMenuEl.hidden) syncPointerOver();
+});
+
+window.addEventListener('mouseout', (e) => {
+  if (e.relatedTarget) return;
+  hover = false;
+  if (!dragging) syncPointerOver();
 });
 
 panelEl.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
-  if (e.target.closest && (e.target.closest('#theme-btn') || e.target.closest('#market-switch'))) return;
+  if (e.target.closest && (e.target.closest('#theme-btn') || e.target.closest('#market-switch') || e.target.closest('#src-btn') || e.target.closest('#src-menu'))) return;
   dragging = true;
   dragMoved = false;
   pendingSecId = findSecId(e.target);
@@ -505,6 +662,7 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('mouseup', () => {
   if (!dragging) return;
   if (!dragMoved && pendingSecId) {
+    selectLocal(pendingSecId);
     window.stockApi.selectTrend(pendingSecId);
   }
   dragging = false;
@@ -519,4 +677,5 @@ window.stockApi.getConfig().then((cfg) => {
   savedCfg = cfg || null;
   applyTheme(cfg && cfg.theme);
   applyMarket(cfg && cfg.market);
+  applyProvider(cfg && cfg.quoteProvider);
 });

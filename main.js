@@ -6,23 +6,17 @@ const {
   Menu,
   nativeImage,
   globalShortcut,
-  net,
   screen
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const https = require('https');
-
-const QUOTE_TIMEOUT_MS = 4000;
-const EASTMONEY_HOSTS = [
-  'https://push2.eastmoney.com',
-  'https://push2delay.eastmoney.com'
-];
-const QUOTE_HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-  Referer: 'https://quote.eastmoney.com/'
-};
+const {
+  QUOTE_PROVIDERS,
+  normalizeProviderId,
+  getQuoteProvider,
+  providerMeta
+} = require('./lib/quotes');
+const FAIL_SWITCH_HINT = 3;
 
 let win;
 let tray;
@@ -31,15 +25,17 @@ let refreshTimer;
 let marketWasOpen = false;
 const CLOSED_WAKE_MS = 60 * 1000;
 const WEEKDAYS = new Set(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
-let clickThroughEnabled = true;
-let userPrefClickThrough = true;
+let clickThroughEnabled = false;
+let userPrefClickThrough = false;
 let pointerOver = false;
+let pointerPoll = null;
 let fetching = false;
 let lastPayload = null;
 let lastTrends = null;
 let savePosTimer = null;
 let pendingFocusIndex;
 let quoteGen = 0;
+let failCount = 0;
 let fileWatchers = [];
 
 const WINDOW_WIDTH = 328;
@@ -102,13 +98,14 @@ function defaultConfig() {
   return {
     refreshIntervalMs: 5000,
     opacity: 0.88,
-    clickThrough: true,
+    clickThrough: false,
     theme: 'sun',
     market: 'cn',
     cnIndex: { secId: '1.000001', name: '上证指数' },
     usIndex: { secId: '100.NDX', name: '纳斯达克100' },
     stocks: [],
-    usStocks: []
+    usStocks: [],
+    quoteProvider: 'eastmoney'
   };
 }
 
@@ -174,10 +171,11 @@ function normalizeUsTicker(code) {
 function loadConfig() {
   ensureConfigFile();
   config = JSON.parse(fs.readFileSync(configPath(), 'utf-8'));
-  userPrefClickThrough = config.clickThrough !== false;
+  userPrefClickThrough = config.clickThrough === true;
   if (config.theme !== 'moon') config.theme = 'sun';
   if (config.market !== 'us') config.market = 'cn';
   if (!Array.isArray(config.usStocks)) config.usStocks = [];
+  config.quoteProvider = normalizeProviderId(config.quoteProvider);
   return config;
 }
 
@@ -222,207 +220,44 @@ function reorderStock(code, action) {
   refreshQuotes();
 }
 
-function toSecId(code) {
-  const c = String(code).replace(/\D/g, '').padStart(6, '0');
-  return `${c.startsWith('6') ? '1' : '0'}.${c}`;
-}
-
-function normalizeDiff(diff) {
-  if (!diff) return [];
-  if (Array.isArray(diff)) return diff;
-  return Object.values(diff);
-}
-
-function toQuote(x, extras) {
-  const market = Number(x.f13);
-  const code = x.f12;
-  const secId = Number.isFinite(market) ? `${market}.${code}` : String(code);
-  return {
-    code,
-    name: x.f14,
-    price: x.f2,
-    pct: x.f3,
-    secId,
-    ...(extras || {})
-  };
-}
-
-function isConfiguredIndex(x, spec) {
-  const secId = spec && spec.secId;
-  if (!secId || !x) return false;
-  const i = String(secId).indexOf('.');
-  if (i < 0) return false;
-  const market = String(secId).slice(0, i);
-  const code = String(secId).slice(i + 1);
-  return String(x.f13) === market && String(x.f12).toUpperCase() === code.toUpperCase();
-}
-
-function indexQuote(item, spec) {
-  if (!item) {
-    return { code: spec.code, name: spec.name, price: '-', pct: null, secId: spec.secId };
-  }
-  return toQuote(item, { name: spec.name || item.f14, secId: spec.secId, code: spec.code });
-}
-
-function usMarketRank(x) {
-  const m = Number(x.f13);
-  if (m === 105) return 0;
-  if (m === 106) return 1;
-  if (m === 107) return 2;
-  return 9;
+function currentProvider() {
+  return providerMeta(config && config.quoteProvider);
 }
 
 function fetchQuotes() {
-  return currentMarket() === 'us' ? fetchUsQuotes() : fetchCnQuotes();
-}
-
-function fetchCnQuotes() {
-  const idx = currentIndex();
-  const padded = currentStocks().map((c) => String(c).replace(/\D/g, '').padStart(6, '0'));
-  const secids = [idx.secId, ...padded.map(toSecId)].join(',');
-  const pathQuery =
-    '/api/qt/ulist.np/get?fltt=2' +
-    `&fields=f12,f13,f14,f2,f3&secids=${secids}`;
-
-  return requestEastmoney(pathQuery).then((raw) => {
-    const json = JSON.parse(raw);
-    const list = normalizeDiff(json?.data?.diff);
-    const indexItem = list.find((x) => isConfiguredIndex(x, idx));
-    const map = new Map(
-      list
-        .filter((x) => !isConfiguredIndex(x, idx))
-        .map((x) => [String(x.f12).padStart(6, '0'), toQuote(x)])
-    );
-    return {
-      quotes: padded.map((c) => map.get(c)).filter(Boolean),
-      index: indexQuote(indexItem, idx)
-    };
+  return getQuoteProvider(currentProvider().id).fetchQuotes({
+    market: currentMarket(),
+    stocks: currentStocks(),
+    indexSpec: currentIndex()
   });
 }
 
-function fetchUsQuotes() {
-  const idx = currentIndex();
-  const tickers = [...new Set(currentStocks().map(normalizeUsTicker).filter(Boolean))];
-  const secids = [
-    idx.secId,
-    ...tickers.flatMap((t) => [`105.${t}`, `106.${t}`, `107.${t}`])
-  ].join(',');
-  const pathQuery =
-    '/api/qt/ulist.np/get?fltt=2' +
-    `&fields=f12,f13,f14,f2,f3&secids=${secids}`;
-
-  return requestEastmoney(pathQuery).then((raw) => {
-    const json = JSON.parse(raw);
-    const list = normalizeDiff(json?.data?.diff);
-    const indexItem = list.find((x) => isConfiguredIndex(x, idx));
-    const map = new Map();
-    list
-      .filter((x) => !isConfiguredIndex(x, idx) && Number.isFinite(Number(x.f2)))
-      .forEach((x) => {
-        const ticker = String(x.f12 || '').toUpperCase();
-        if (!ticker) return;
-        const prev = map.get(ticker);
-        if (!prev || usMarketRank(x) < usMarketRank(prev)) map.set(ticker, x);
-      });
-    return {
-      quotes: tickers
-        .map((t) => {
-          const x = map.get(t);
-          return x ? toQuote(x, { code: t }) : null;
-        })
-        .filter(Boolean),
-      index: indexQuote(indexItem, idx)
-    };
-  });
+function fetchTrends(secId) {
+  return getQuoteProvider(currentProvider().id).fetchTrends(secId);
 }
 
-function parseTrendLine(line) {
-  const p = String(line).split(',');
-  const time = (p[0] || '').slice(-5);
+function hasQuoteData(data) {
+  if (!data) return false;
+  const price = Number(data.index && data.index.price);
+  const indexOk = Number.isFinite(price) && price > 0;
+  const quotesOk =
+    Array.isArray(data.quotes) && data.quotes.some((q) => Number.isFinite(Number(q.price)) && Number(q.price) > 0);
+  return indexOk || quotesOk;
+}
+
+function emptyIndexPayload() {
+  const spec = currentIndex();
+  return { code: spec.code, name: spec.name, price: '-', pct: null, secId: spec.secId };
+}
+
+function quoteMeta(suggestSwitch) {
+  const provider = currentProvider();
   return {
-    time,
-    price: Number(p[1]),
-    avg: Number(p[2])
+    quoteProvider: provider.id,
+    quoteProviderLabel: provider.label,
+    quoteProviderShort: provider.short,
+    suggestSwitch: !!suggestSwitch
   };
-}
-
-function fetchTrends(secid) {
-  const pathQuery =
-    '/api/qt/stock/trends2/get?' +
-    `secid=${encodeURIComponent(secid)}&ndays=1&iscr=0&fltt=2` +
-    '&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13' +
-    '&fields2=f51,f52,f53,f54,f55,f56,f57,f58';
-  return requestEastmoney(pathQuery).then((raw) => {
-    const json = JSON.parse(raw);
-    const d = json?.data || {};
-    const points = (d.trends || [])
-      .map(parseTrendLine)
-      .filter((p) => p.time && Number.isFinite(p.price));
-    return {
-      secId: secid,
-      name: d.name || '',
-      code: d.code || '',
-      preClose: Number(d.preClose),
-      points
-    };
-  });
-}
-
-function requestEastmoney(pathQuery) {
-  return Promise.any(EASTMONEY_HOSTS.map((host) => requestText(host + pathQuery))).catch((err) => {
-    const first = err && err.errors && err.errors[0] ? err.errors[0] : err;
-    throw first;
-  });
-}
-
-function requestText(url) {
-  return requestWithNet(url).catch(() => requestWithHttps(url));
-}
-
-function requestWithNet(url) {
-  return new Promise((resolve, reject) => {
-    const req = net.request({ url, method: 'GET' });
-    Object.entries(QUOTE_HEADERS).forEach(([k, v]) => req.setHeader(k, v));
-    let raw = '';
-    const timer = setTimeout(() => {
-      try {
-        req.abort();
-      } catch (_) {
-        /* ignore */
-      }
-      reject(new Error('quote timeout'));
-    }, QUOTE_TIMEOUT_MS);
-    req.on('response', (res) => {
-      res.on('data', (chunk) => {
-        raw += Buffer.from(chunk).toString('utf8');
-      });
-      res.on('end', () => {
-        clearTimeout(timer);
-        resolve(raw);
-      });
-    });
-    req.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    req.end();
-  });
-}
-
-function requestWithHttps(url) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      url,
-      { headers: QUOTE_HEADERS, timeout: QUOTE_TIMEOUT_MS, family: 4 },
-      (res) => {
-        let raw = '';
-        res.on('data', (chunk) => (raw += chunk));
-        res.on('end', () => resolve(raw));
-      }
-    );
-    req.on('timeout', () => req.destroy(new Error('quote timeout')));
-    req.on('error', reject);
-  });
 }
 
 function pushQuotesToRenderer() {
@@ -464,6 +299,8 @@ function refreshQuotes() {
     )
     .then(({ quoteData, trends }) => {
       if (gen !== quoteGen) return;
+      if (hasQuoteData(quoteData)) failCount = 0;
+      else failCount += 1;
       lastTrends = trends;
       sendQuotes({
         quotes: quoteData.quotes,
@@ -472,11 +309,29 @@ function refreshQuotes() {
         selectedSecId,
         market: currentMarket(),
         indexSpec: currentIndex(),
-        opacity: config.opacity ?? 0.88
+        opacity: config.opacity ?? 0.88,
+        ...quoteMeta(failCount >= FAIL_SWITCH_HINT)
       });
     })
     .catch((err) => {
       console.error('[stock-widget] fetch error:', err);
+      failCount += 1;
+      const suggestSwitch = failCount >= FAIL_SWITCH_HINT;
+      if (lastPayload) {
+        lastPayload = { ...lastPayload, ...quoteMeta(suggestSwitch) };
+        pushQuotesToRenderer();
+      } else if (suggestSwitch && win && !win.isDestroyed()) {
+        win.webContents.send('quotes-update', {
+          quotes: [],
+          index: emptyIndexPayload(),
+          trends: null,
+          selectedSecId,
+          market: currentMarket(),
+          indexSpec: currentIndex(),
+          opacity: config.opacity ?? 0.88,
+          ...quoteMeta(true)
+        });
+      }
       if (!lastPayload) {
         setTimeout(() => refreshQuotes(), 3000);
       }
@@ -500,6 +355,34 @@ function applyClickThrough(enable) {
 function effectiveClickThrough() {
   if (!userPrefClickThrough) return false;
   return !pointerOver;
+}
+
+function cursorOverWidget() {
+  if (!win || win.isDestroyed() || !win.isVisible()) return false;
+  const point = screen.getCursorScreenPoint();
+  const bounds = win.getBounds();
+  return (
+    point.x >= bounds.x &&
+    point.x <= bounds.x + bounds.width &&
+    point.y >= bounds.y &&
+    point.y <= bounds.y + bounds.height
+  );
+}
+
+function startPointerPoll() {
+  if (pointerPoll) return;
+  pointerPoll = setInterval(() => {
+    if (!pointerOver) return;
+    if (cursorOverWidget()) return;
+    pointerOver = false;
+    syncClickThrough();
+  }, 200);
+}
+
+function stopPointerPoll() {
+  if (!pointerPoll) return;
+  clearInterval(pointerPoll);
+  pointerPoll = null;
 }
 
 function syncClickThrough() {
@@ -575,20 +458,48 @@ function startRefresh() {
   refreshTimer = setTimeout(refreshLoop, delay);
 }
 
+function setQuoteProvider(id) {
+  loadConfig();
+  const next = normalizeProviderId(id);
+  if (config.quoteProvider !== next) {
+    config.quoteProvider = next;
+    saveConfig();
+    lastTrends = null;
+    lastPayload = null;
+    failCount = 0;
+  }
+  refreshQuotes();
+  startRefresh();
+  updateTray();
+  return currentProvider();
+}
+
 function reloadAll() {
   loadConfig();
   selectedSecId = indexSecId();
   lastTrends = null;
+  failCount = 0;
   refreshQuotes();
   startRefresh();
   syncClickThrough();
+  updateTray();
   return config;
 }
 
-function toggleClickThrough() {
-  userPrefClickThrough = !userPrefClickThrough;
+function setClickThroughPref(enabled) {
+  userPrefClickThrough = !!enabled;
+  pointerOver = false;
+  if (config) {
+    config.clickThrough = userPrefClickThrough;
+    saveConfig();
+  }
   syncClickThrough();
-  return clickThroughEnabled;
+  updateTray();
+  return userPrefClickThrough;
+}
+
+function toggleClickThrough() {
+  return setClickThroughPref(!userPrefClickThrough);
 }
 
 function isWidgetVisible() {
@@ -638,8 +549,19 @@ function updateTray() {
         click: () => reloadAll()
       },
       {
-        label: '切换鼠标穿透',
-        click: () => toggleClickThrough()
+        label: '数据来源',
+        submenu: QUOTE_PROVIDERS.map((p) => ({
+          label: p.label,
+          type: 'radio',
+          checked: currentProvider().id === p.id,
+          click: () => setQuoteProvider(p.id)
+        }))
+      },
+      {
+        label: '鼠标穿透',
+        type: 'checkbox',
+        checked: userPrefClickThrough,
+        click: (item) => setClickThroughPref(!!item.checked)
       },
       { type: 'separator' },
       { label: '退出', click: () => app.quit() }
@@ -659,43 +581,112 @@ function createTray() {
 
 function debounce(fn, ms) {
   let timer;
-  return () => {
+  return (...args) => {
     clearTimeout(timer);
-    timer = setTimeout(fn, ms);
+    timer = setTimeout(() => fn(...args), ms);
   };
+}
+
+function listFiles(dir, acc = []) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (_) {
+    return acc;
+  }
+  entries.forEach((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      listFiles(full, acc);
+      return;
+    }
+    acc.push(full);
+  });
+  return acc;
+}
+
+function fileMtime(file) {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch (_) {
+    return 0;
+  }
 }
 
 function watchDevReload() {
   if (app.isPackaged) return;
   const reloadRenderer = debounce(() => {
-    if (win && !win.isDestroyed()) win.webContents.reloadIgnoringCache();
+    if (win && !win.isDestroyed()) {
+      console.log('[stock-widget] 热更新：刷新界面');
+      win.webContents.reloadIgnoringCache();
+    }
   }, 250);
   const relaunchApp = debounce(() => {
+    console.log('[stock-widget] 热更新：重启主进程');
+    try {
+      app.releaseSingleInstanceLock();
+    } catch (_) {
+      /* ignore */
+    }
     app.relaunch();
     app.exit(0);
-  }, 400);
-  const reloadCfg = debounce(() => reloadAll(), 250);
+  }, 500);
+  const reloadCfg = debounce(() => {
+    console.log('[stock-widget] 热更新：重载配置');
+    reloadAll();
+  }, 250);
 
-  try {
-    fileWatchers.push(
-      fs.watch(path.join(__dirname, 'renderer'), { recursive: true }, reloadRenderer)
-    );
-    fileWatchers.push(
-      fs.watch(__dirname, (_, filename) => {
-        if (!filename) return;
-        if (filename === 'stocks.json') {
-          reloadCfg();
-          return;
-        }
-        if (filename === 'main.js' || filename === 'preload.js' || filename === 'icon.png') {
-          relaunchApp();
-        }
-      })
-    );
-    console.log('[stock-widget] 开发热更新已开启：改界面会刷新窗口，改主进程会自动重启');
-  } catch (err) {
-    console.error('[stock-widget] watch error:', err);
-  }
+  const watched = [
+    path.join(__dirname, 'main.js'),
+    path.join(__dirname, 'preload.js'),
+    path.join(__dirname, 'icon.png'),
+    path.join(__dirname, 'stocks.json'),
+    ...listFiles(path.join(__dirname, 'renderer')),
+    ...listFiles(path.join(__dirname, 'lib'))
+  ];
+  const mtimes = new Map();
+  watched.forEach((file) => mtimes.set(file, fileMtime(file)));
+
+  const timer = setInterval(() => {
+    const latest = [
+      path.join(__dirname, 'main.js'),
+      path.join(__dirname, 'preload.js'),
+      path.join(__dirname, 'icon.png'),
+      path.join(__dirname, 'stocks.json'),
+      ...listFiles(path.join(__dirname, 'renderer')),
+      ...listFiles(path.join(__dirname, 'lib'))
+    ];
+    latest.forEach((file) => {
+      const next = fileMtime(file);
+      const prev = mtimes.get(file);
+      if (prev == null) {
+        mtimes.set(file, next);
+        return;
+      }
+      if (next === prev) return;
+      mtimes.set(file, next);
+      const rel = path.relative(__dirname, file).replace(/\\/g, '/');
+      if (rel === 'stocks.json') {
+        reloadCfg();
+        return;
+      }
+      if (rel.startsWith('renderer/')) {
+        reloadRenderer();
+        return;
+      }
+      relaunchApp();
+    });
+    [...mtimes.keys()].forEach((file) => {
+      if (!latest.includes(file)) mtimes.delete(file);
+    });
+  }, 400);
+
+  fileWatchers.push({
+    close() {
+      clearInterval(timer);
+    }
+  });
+  console.log('[stock-widget] 开发热更新已开启：改界面会刷新窗口，改主进程会自动重启');
 }
 
 function registerShortcuts() {
@@ -755,6 +746,7 @@ ipcMain.handle('set-market', (_, market) => {
     selectedSecId = indexSecId();
     lastTrends = null;
     lastPayload = null;
+    failCount = 0;
     pendingFocusIndex = 0;
   }
   refreshQuotes();
@@ -762,6 +754,7 @@ ipcMain.handle('set-market', (_, market) => {
   return config.market;
 });
 ipcMain.handle('reload-config', () => reloadAll());
+ipcMain.handle('set-quote-provider', (_, id) => setQuoteProvider(id));
 ipcMain.handle('toggle-click-through', () => toggleClickThrough());
 
 ipcMain.handle('stock-order-info', (_, code) => {
@@ -786,17 +779,19 @@ ipcMain.on('select-trend', (_, secId) => {
     .then((trends) => {
       lastTrends = trends;
       sendQuotes({
-        ...(lastPayload || { quotes: [], index: null }),
+        ...(lastPayload || { quotes: [], index: emptyIndexPayload() }),
         trends,
         selectedSecId,
         market: currentMarket(),
-        indexSpec: currentIndex()
+        indexSpec: currentIndex(),
+        ...quoteMeta(failCount >= FAIL_SWITCH_HINT)
       });
     })
     .catch((err) => console.error('[stock-widget] trends error:', err));
 });
 
 ipcMain.on('pointer-over', (_, over) => {
+  if (over && !cursorOverWidget()) over = false;
   pointerOver = !!over;
   syncClickThrough();
 });
@@ -821,6 +816,7 @@ if (!gotLock) {
     selectedSecId = indexSecId();
     createWindow();
     createTray();
+    startPointerPoll();
     registerShortcuts();
     refreshQuotes();
     startRefresh();
@@ -833,6 +829,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+  stopPointerPoll();
   stopRefresh();
   fileWatchers.forEach((w) => {
     try {

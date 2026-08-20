@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('stockApi', {
   reorderStock: (code, action) => ipcRenderer.send('reorder-stock', { code, action }),
   setTheme: (theme) => ipcRenderer.invoke('set-theme', theme),
   setMarket: (market) => ipcRenderer.invoke('set-market', market),
+  setQuoteProvider: (id) => ipcRenderer.invoke('set-quote-provider', id),
   moveWindow: (dx, dy) => ipcRenderer.send('move-window', dx, dy),
   onQuotesUpdate: (cb) => {
     ipcRenderer.on('quotes-update', (_, data) => cb(data));

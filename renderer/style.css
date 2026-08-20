@@ -53,7 +53,8 @@ html, body {
 }
 
 #panel,
-#ctx-menu {
+#ctx-menu,
+#src-menu {
   color: var(--text);
   background:
     linear-gradient(165deg, var(--glass-1) 0%, var(--glass-2) 42%, var(--glass-3) 100%),
@@ -161,10 +162,30 @@ html[data-theme="moon"] .icon-sun {
   display: none;
 }
 
+#src-btn {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--status);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+#src-btn:hover {
+  opacity: 0.85;
+}
+
 #hint {
   font-size: 10px;
   color: var(--text-dim);
   margin-bottom: 8px;
+}
+
+#hint.switch-hint {
+  color: var(--status);
+  cursor: pointer;
 }
 
 .row {
@@ -179,8 +200,11 @@ html[data-theme="moon"] .icon-sun {
   padding: 0 4px;
 }
 
-.row.active {
-  background: var(--row-active);
+.missing-hint {
+  grid-template-columns: 1fr;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: default;
 }
 
 #status {
@@ -255,6 +279,17 @@ html[data-theme="moon"] .icon-sun {
   margin-top: 2px;
 }
 
+#chart-head.refreshing,
+#chart.refreshing {
+  animation: chart-refresh 0.42s ease;
+}
+
+@keyframes chart-refresh {
+  0% { opacity: 0.22; }
+  55% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
 #index .name {
   font-weight: 600;
   color: var(--text);
@@ -269,7 +304,8 @@ html[data-theme="moon"] .icon-sun {
 .down { color: var(--down); }
 .flat { color: rgba(220, 224, 230, 0.78); }
 
-#ctx-menu {
+#ctx-menu,
+#src-menu {
   position: fixed;
   z-index: 30;
   min-width: 112px;
@@ -279,7 +315,8 @@ html[data-theme="moon"] .icon-sun {
   cursor: default;
 }
 
-#ctx-menu button {
+#ctx-menu button,
+#src-menu button {
   display: block;
   width: 100%;
   border: 0;
@@ -294,8 +331,13 @@ html[data-theme="moon"] .icon-sun {
   cursor: pointer;
 }
 
-#ctx-menu button:hover:not(:disabled) {
+#ctx-menu button:hover:not(:disabled),
+#src-menu button:hover:not(:disabled) {
   background: var(--menu-hover);
+}
+
+#src-menu button.active {
+  font-weight: 600;
 }
 
 #ctx-menu button:disabled {
