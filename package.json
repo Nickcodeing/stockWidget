@@ -20,7 +20,7 @@
     "files": [
       "main.js",
       "preload.js",
-      "stocks.json",
+      "stocks.example.json",
       "icon.png",
       "position.json",
       "renderer/**/*"

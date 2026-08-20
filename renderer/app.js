@@ -1,7 +1,7 @@
 const ROW_H = 28;
 const VISIBLE = 3;
-const CN_INDEX_SECID = '1.000001';
-const US_INDEX_SECID = '100.NDX';
+const DEFAULT_CN_INDEX = { secId: '1.000001', name: '上证指数', code: '000001' };
+const DEFAULT_US_INDEX = { secId: '100.NDX', name: '纳斯达克100', code: 'NDX' };
 const DRAG_THRESHOLD = 5;
 
 let quotes = [];
@@ -12,11 +12,40 @@ let hover = false;
 let dragStart = { x: 0, y: 0 };
 let pendingSecId = null;
 let currentMarket = 'cn';
-let selectedSecId = CN_INDEX_SECID;
+let selectedSecId = DEFAULT_CN_INDEX.secId;
 let trends = null;
+let savedCfg = null;
+let indexSpec = DEFAULT_CN_INDEX;
+
+function parseIndexSpec(raw, fallback) {
+  const codeFrom = (secId) => String(secId).slice(String(secId).indexOf('.') + 1);
+  if (typeof raw === 'string' && raw.includes('.')) {
+    const secId = raw.trim();
+    return {
+      secId,
+      name: secId === fallback.secId ? fallback.name : '',
+      code: codeFrom(secId)
+    };
+  }
+  if (raw && typeof raw === 'object' && raw.secId) {
+    const secId = String(raw.secId).trim();
+    const custom = raw.name != null && String(raw.name).trim() !== '';
+    return {
+      secId,
+      name: custom ? String(raw.name).trim() : (secId === fallback.secId ? fallback.name : ''),
+      code: codeFrom(secId)
+    };
+  }
+  return { secId: fallback.secId, name: fallback.name, code: fallback.code || codeFrom(fallback.secId) };
+}
+
+function specForMarket(market) {
+  const us = market === 'us';
+  return parseIndexSpec(us ? savedCfg?.usIndex : savedCfg?.cnIndex, us ? DEFAULT_US_INDEX : DEFAULT_CN_INDEX);
+}
 
 function indexSecId() {
-  return currentMarket === 'us' ? US_INDEX_SECID : CN_INDEX_SECID;
+  return indexSpec.secId;
 }
 
 function rowSecId(q) {
@@ -77,10 +106,8 @@ function applyMarket(market) {
   document.documentElement.dataset.market = currentMarket;
   marketCnBtn.classList.toggle('active', currentMarket === 'cn');
   marketUsBtn.classList.toggle('active', currentMarket === 'us');
-  indexNameEl.innerHTML = nameCellHtml(
-    currentMarket === 'us' ? '纳斯达克100' : '上证指数',
-    currentMarket === 'us' ? 'NDX' : '000001'
-  );
+  indexSpec = specForMarket(currentMarket);
+  indexNameEl.innerHTML = nameCellHtml(indexSpec.name, indexSpec.code);
   chartMetaEl.textContent = currentMarket === 'us' ? '21:30-04:00' : '9:30-15:00';
   indexRowEl.dataset.secid = indexSecId();
   if (switched) {
@@ -150,6 +177,15 @@ function renderIndex(index) {
   indexPriceEl.textContent = price;
   indexPctEl.textContent = pctText;
   indexPctEl.className = `pct ${cls}`;
+  if (index && (index.name || index.code || index.secId)) {
+    indexSpec = {
+      secId: index.secId || indexSpec.secId,
+      name: index.name || indexSpec.name,
+      code: index.code || indexSpec.code
+    };
+    indexNameEl.innerHTML = nameCellHtml(indexSpec.name, indexSpec.code);
+    indexRowEl.dataset.secid = indexSpec.secId;
+  }
   indexRowEl.classList.toggle('active', selectedSecId === indexSecId());
 }
 
@@ -206,11 +242,9 @@ function drawChart() {
 
   const points = trends?.points || [];
   const preClose = Number(trends?.preClose);
-  const fallbackName = currentMarket === 'us' ? '纳斯达克100' : '上证指数';
-  const trendName =
-    trends?.secId === US_INDEX_SECID || trends?.code === 'NDX'
-      ? '纳斯达克100'
-      : trends?.name || fallbackName;
+  const trendName = trends?.secId === indexSpec.secId || trends?.code === indexSpec.code
+    ? indexSpec.name
+    : (trends?.name || indexSpec.name);
   chartTitleEl.textContent = `分时 · ${trendName}`;
 
   if (!points.length || !Number.isFinite(preClose)) {
@@ -319,6 +353,7 @@ function drawChart() {
 
 window.stockApi.onQuotesUpdate((data) => {
   if (data.market) applyMarket(data.market);
+  if (data.indexSpec) indexSpec = data.indexSpec;
   quotes = data.quotes || [];
   if (data.selectedSecId) selectedSecId = data.selectedSecId;
   trends = data.trends || trends;
@@ -481,6 +516,7 @@ window.addEventListener('mouseup', () => {
 
 window.addEventListener('resize', () => drawChart());
 window.stockApi.getConfig().then((cfg) => {
+  savedCfg = cfg || null;
   applyTheme(cfg && cfg.theme);
   applyMarket(cfg && cfg.market);
 });

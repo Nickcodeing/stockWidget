@@ -45,9 +45,9 @@ let fileWatchers = [];
 const WINDOW_WIDTH = 328;
 const WINDOW_HEIGHT = 292;
 const DEFAULT_POSITION = { x: 1569, y: 748 };
-const CN_INDEX_SECID = '1.000001';
-const US_INDEX_SECID = '100.NDX';
-let selectedSecId = CN_INDEX_SECID;
+const DEFAULT_CN_INDEX = { secId: '1.000001', name: '上证指数' };
+const DEFAULT_US_INDEX = { secId: '100.NDX', name: '纳斯达克100' };
+let selectedSecId = DEFAULT_CN_INDEX.secId;
 
 function positionPath() {
   return path.join(__dirname, 'position.json');
@@ -94,12 +94,69 @@ function configPath() {
   return path.join(__dirname, 'stocks.json');
 }
 
+function exampleConfigPath() {
+  return path.join(__dirname, 'stocks.example.json');
+}
+
+function defaultConfig() {
+  return {
+    refreshIntervalMs: 5000,
+    opacity: 0.88,
+    clickThrough: true,
+    theme: 'sun',
+    market: 'cn',
+    cnIndex: { secId: '1.000001', name: '上证指数' },
+    usIndex: { secId: '100.NDX', name: '纳斯达克100' },
+    stocks: [],
+    usStocks: []
+  };
+}
+
+function ensureConfigFile() {
+  const dest = configPath();
+  if (fs.existsSync(dest)) return;
+  const example = exampleConfigPath();
+  if (fs.existsSync(example)) {
+    fs.copyFileSync(example, dest);
+    return;
+  }
+  fs.writeFileSync(dest, `${JSON.stringify(defaultConfig(), null, 2)}\n`);
+}
+
 function currentMarket() {
   return config && config.market === 'us' ? 'us' : 'cn';
 }
 
+function parseIndexSpec(raw, fallback) {
+  const codeFrom = (secId) => String(secId).slice(String(secId).indexOf('.') + 1);
+  if (typeof raw === 'string' && raw.includes('.')) {
+    const secId = raw.trim();
+    return {
+      secId,
+      name: secId === fallback.secId ? fallback.name : '',
+      code: codeFrom(secId)
+    };
+  }
+  if (raw && typeof raw === 'object' && raw.secId) {
+    const secId = String(raw.secId).trim();
+    const custom = raw.name != null && String(raw.name).trim() !== '';
+    return {
+      secId,
+      name: custom ? String(raw.name).trim() : (secId === fallback.secId ? fallback.name : ''),
+      code: codeFrom(secId)
+    };
+  }
+  return { secId: fallback.secId, name: fallback.name, code: codeFrom(fallback.secId) };
+}
+
+function currentIndex() {
+  return currentMarket() === 'us'
+    ? parseIndexSpec(config.usIndex, DEFAULT_US_INDEX)
+    : parseIndexSpec(config.cnIndex, DEFAULT_CN_INDEX);
+}
+
 function indexSecId() {
-  return currentMarket() === 'us' ? US_INDEX_SECID : CN_INDEX_SECID;
+  return currentIndex().secId;
 }
 
 function currentStocks() {
@@ -115,6 +172,7 @@ function normalizeUsTicker(code) {
 }
 
 function loadConfig() {
+  ensureConfigFile();
   config = JSON.parse(fs.readFileSync(configPath(), 'utf-8'));
   userPrefClickThrough = config.clickThrough !== false;
   if (config.theme !== 'moon') config.theme = 'sun';
@@ -189,12 +247,21 @@ function toQuote(x, extras) {
   };
 }
 
-function isShanghaiIndex(x) {
-  return String(x.f12).padStart(6, '0') === '000001' && Number(x.f13) === 1;
+function isConfiguredIndex(x, spec) {
+  const secId = spec && spec.secId;
+  if (!secId || !x) return false;
+  const i = String(secId).indexOf('.');
+  if (i < 0) return false;
+  const market = String(secId).slice(0, i);
+  const code = String(secId).slice(i + 1);
+  return String(x.f13) === market && String(x.f12).toUpperCase() === code.toUpperCase();
 }
 
-function isNasdaq100(x) {
-  return String(x.f12).toUpperCase() === 'NDX' && Number(x.f13) === 100;
+function indexQuote(item, spec) {
+  if (!item) {
+    return { code: spec.code, name: spec.name, price: '-', pct: null, secId: spec.secId };
+  }
+  return toQuote(item, { name: spec.name || item.f14, secId: spec.secId, code: spec.code });
 }
 
 function usMarketRank(x) {
@@ -210,8 +277,9 @@ function fetchQuotes() {
 }
 
 function fetchCnQuotes() {
+  const idx = currentIndex();
   const padded = currentStocks().map((c) => String(c).replace(/\D/g, '').padStart(6, '0'));
-  const secids = [CN_INDEX_SECID, ...padded.map(toSecId)].join(',');
+  const secids = [idx.secId, ...padded.map(toSecId)].join(',');
   const pathQuery =
     '/api/qt/ulist.np/get?fltt=2' +
     `&fields=f12,f13,f14,f2,f3&secids=${secids}`;
@@ -219,23 +287,24 @@ function fetchCnQuotes() {
   return requestEastmoney(pathQuery).then((raw) => {
     const json = JSON.parse(raw);
     const list = normalizeDiff(json?.data?.diff);
-    const indexItem = list.find(isShanghaiIndex) || list.find((x) => x.f14 === '上证指数');
+    const indexItem = list.find((x) => isConfiguredIndex(x, idx));
     const map = new Map(
       list
-        .filter((x) => !isShanghaiIndex(x))
+        .filter((x) => !isConfiguredIndex(x, idx))
         .map((x) => [String(x.f12).padStart(6, '0'), toQuote(x)])
     );
     return {
       quotes: padded.map((c) => map.get(c)).filter(Boolean),
-      index: indexItem ? toQuote(indexItem, { name: '上证指数', secId: CN_INDEX_SECID }) : null
+      index: indexQuote(indexItem, idx)
     };
   });
 }
 
 function fetchUsQuotes() {
+  const idx = currentIndex();
   const tickers = [...new Set(currentStocks().map(normalizeUsTicker).filter(Boolean))];
   const secids = [
-    US_INDEX_SECID,
+    idx.secId,
     ...tickers.flatMap((t) => [`105.${t}`, `106.${t}`, `107.${t}`])
   ].join(',');
   const pathQuery =
@@ -245,10 +314,10 @@ function fetchUsQuotes() {
   return requestEastmoney(pathQuery).then((raw) => {
     const json = JSON.parse(raw);
     const list = normalizeDiff(json?.data?.diff);
-    const indexItem = list.find(isNasdaq100);
+    const indexItem = list.find((x) => isConfiguredIndex(x, idx));
     const map = new Map();
     list
-      .filter((x) => !isNasdaq100(x) && Number.isFinite(Number(x.f2)))
+      .filter((x) => !isConfiguredIndex(x, idx) && Number.isFinite(Number(x.f2)))
       .forEach((x) => {
         const ticker = String(x.f12 || '').toUpperCase();
         if (!ticker) return;
@@ -262,9 +331,7 @@ function fetchUsQuotes() {
           return x ? toQuote(x, { code: t }) : null;
         })
         .filter(Boolean),
-      index: indexItem
-        ? toQuote(indexItem, { name: '纳斯达克100', secId: US_INDEX_SECID })
-        : { code: 'NDX', name: '纳斯达克100', price: '-', pct: null, secId: US_INDEX_SECID }
+      index: indexQuote(indexItem, idx)
     };
   });
 }
@@ -404,6 +471,7 @@ function refreshQuotes() {
         trends,
         selectedSecId,
         market: currentMarket(),
+        indexSpec: currentIndex(),
         opacity: config.opacity ?? 0.88
       });
     })
@@ -721,7 +789,8 @@ ipcMain.on('select-trend', (_, secId) => {
         ...(lastPayload || { quotes: [], index: null }),
         trends,
         selectedSecId,
-        market: currentMarket()
+        market: currentMarket(),
+        indexSpec: currentIndex()
       });
     })
     .catch((err) => console.error('[stock-widget] trends error:', err));

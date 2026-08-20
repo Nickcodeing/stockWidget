@@ -1,0 +1,25 @@
+{
+  "refreshIntervalMs": 5000,
+  "opacity": 0.88,
+  "clickThrough": true,
+  "theme": "sun",
+  "market": "cn",
+  "cnIndex": {
+    "secId": "1.000001",
+    "name": "上证指数"
+  },
+  "usIndex": {
+    "secId": "100.NDX",
+    "name": "纳斯达克100"
+  },
+  "stocks": [
+    "600519",
+    "000001",
+    "300750"
+  ],
+  "usStocks": [
+    "AAPL",
+    "NVDA",
+    "TSLA"
+  ]
+}

@@ -1,5 +1,7 @@
 node_modules/
 position.json
+stocks.json
+.idea/
 *.lnk
 Thumbs.db
 Desktop.ini
