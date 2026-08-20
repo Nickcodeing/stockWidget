@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="sun">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="panel">
+    <div id="header">
+      <span id="title-wrap">
+        <span>A股行情</span>
+        <span id="clock">--:--:--</span>
+      </span>
+      <span id="header-right">
+        <button type="button" id="theme-btn" title="切换风格">
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 14.5A8.5 8.5 0 1 1 9.5 4 7 7 0 0 0 20 14.5z"></path>
+          </svg>
+        </button>
+        <span id="status">穿透</span>
+      </span>
+    </div>
+    <div id="hint">左键看分时 · 右键调顺序 · 拖动窗口</div>
+    <div id="viewport">
+      <div id="list"></div>
+    </div>
+    <div id="index">
+      <div class="row active" id="index-row" data-secid="1.000001">
+        <div class="name">上证指数</div>
+        <div class="price" id="index-price">--</div>
+        <div class="pct flat" id="index-pct">--</div>
+      </div>
+      <div id="chart-head">
+        <span id="chart-title">分时 · 上证指数</span>
+        <span id="chart-meta">9:30-15:00</span>
+      </div>
+      <canvas id="chart"></canvas>
+    </div>
+  </div>
+  <div id="ctx-menu" hidden>
+    <button type="button" data-action="top">置顶</button>
+    <button type="button" data-action="up">上移</button>
+    <button type="button" data-action="down">下移</button>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

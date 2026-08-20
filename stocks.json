@@ -1,0 +1,14 @@
+{
+  "refreshIntervalMs": 5000,
+  "opacity": 0.88,
+  "clickThrough": true,
+  "stocks": [
+    "300438",
+    "000811",
+    "300139",
+    "300432",
+    "603618",
+    "000533"
+  ],
+  "theme": "sun"
+}

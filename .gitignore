@@ -1,0 +1,7 @@
+node_modules/
+position.json
+*.lnk
+Thumbs.db
+Desktop.ini
+dist/
+out/
