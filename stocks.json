@@ -2,6 +2,8 @@
   "refreshIntervalMs": 5000,
   "opacity": 0.88,
   "clickThrough": true,
+  "theme": "moon",
+  "market": "cn",
   "stocks": [
     "300438",
     "000811",
@@ -10,5 +12,11 @@
     "603618",
     "000533"
   ],
-  "theme": "sun"
+  "usStocks": [
+    "AAPL",
+    "NVDA",
+    "TSLA",
+    "MSFT",
+    "GOOGL"
+  ]
 }

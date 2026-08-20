@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="sun">
+<html lang="zh-CN" data-theme="sun" data-market="cn">
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
@@ -9,7 +9,11 @@
   <div id="panel">
     <div id="header">
       <span id="title-wrap">
-        <span>A股行情</span>
+        <span id="market-switch">
+          <button type="button" id="market-cn" class="market-btn active">A股</button>
+          <span class="market-sep">/</span>
+          <button type="button" id="market-us" class="market-btn">美股</button>
+        </span>
         <span id="clock">--:--:--</span>
       </span>
       <span id="header-right">
@@ -31,7 +35,10 @@
     </div>
     <div id="index">
       <div class="row active" id="index-row" data-secid="1.000001">
-        <div class="name">上证指数</div>
+        <div class="name" id="index-name">
+          <span class="name-text">上证指数</span>
+          <span class="name-code">000001</span>
+        </div>
         <div class="price" id="index-price">--</div>
         <div class="pct flat" id="index-pct">--</div>
       </div>

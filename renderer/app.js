@@ -1,6 +1,7 @@
 const ROW_H = 28;
 const VISIBLE = 3;
-const INDEX_SECID = '1.000001';
+const CN_INDEX_SECID = '1.000001';
+const US_INDEX_SECID = '100.NDX';
 const DRAG_THRESHOLD = 5;
 
 let quotes = [];
@@ -10,12 +11,23 @@ let dragMoved = false;
 let hover = false;
 let dragStart = { x: 0, y: 0 };
 let pendingSecId = null;
-let selectedSecId = INDEX_SECID;
+let currentMarket = 'cn';
+let selectedSecId = CN_INDEX_SECID;
 let trends = null;
 
-function toSecId(code) {
-  const c = String(code).replace(/\D/g, '').padStart(6, '0');
+function indexSecId() {
+  return currentMarket === 'us' ? US_INDEX_SECID : CN_INDEX_SECID;
+}
+
+function rowSecId(q) {
+  if (q?.secId) return q.secId;
+  const c = String(q?.code || '').replace(/\D/g, '').padStart(6, '0');
   return `${c.startsWith('6') ? '1' : '0'}.${c}`;
+}
+
+function rowCode(q) {
+  if (currentMarket === 'us') return String(q.code || '').toUpperCase();
+  return String(q.code).replace(/\D/g, '').padStart(6, '0');
 }
 
 function syncPointerOver() {
@@ -40,12 +52,43 @@ tickClock();
 setInterval(tickClock, 1000);
 
 const themeBtn = document.getElementById('theme-btn');
+const marketCnBtn = document.getElementById('market-cn');
+const marketUsBtn = document.getElementById('market-us');
+const chartMetaEl = document.getElementById('chart-meta');
+const indexNameEl = document.querySelector('#index-row .name');
+const indexRowEl = document.getElementById('index-row');
+const indexPriceEl = document.getElementById('index-price');
+const indexPctEl = document.getElementById('index-pct');
+const chartEl = document.getElementById('chart');
+const chartTitleEl = document.getElementById('chart-title');
+const ctx = chartEl.getContext('2d');
 let currentTheme = 'sun';
 
 function applyTheme(theme) {
   currentTheme = theme === 'moon' ? 'moon' : 'sun';
   document.documentElement.dataset.theme = currentTheme;
   themeBtn.title = currentTheme === 'sun' ? '当前浅色，点击切换深色' : '当前深色，点击切换浅色';
+}
+
+function applyMarket(market) {
+  const next = market === 'us' ? 'us' : 'cn';
+  const switched = currentMarket !== next;
+  currentMarket = next;
+  document.documentElement.dataset.market = currentMarket;
+  marketCnBtn.classList.toggle('active', currentMarket === 'cn');
+  marketUsBtn.classList.toggle('active', currentMarket === 'us');
+  indexNameEl.innerHTML = nameCellHtml(
+    currentMarket === 'us' ? '纳斯达克100' : '上证指数',
+    currentMarket === 'us' ? 'NDX' : '000001'
+  );
+  chartMetaEl.textContent = currentMarket === 'us' ? '21:30-04:00' : '9:30-15:00';
+  indexRowEl.dataset.secid = indexSecId();
+  if (switched) {
+    selectedSecId = indexSecId();
+    scrollIndex = 0;
+    quotes = [];
+    trends = null;
+  }
 }
 
 themeBtn.addEventListener('mousedown', (e) => {
@@ -58,12 +101,40 @@ themeBtn.addEventListener('click', (e) => {
   applyTheme(next);
   window.stockApi.setTheme(next);
 });
-const indexRowEl = document.getElementById('index-row');
-const indexPriceEl = document.getElementById('index-price');
-const indexPctEl = document.getElementById('index-pct');
-const chartEl = document.getElementById('chart');
-const chartTitleEl = document.getElementById('chart-title');
-const ctx = chartEl.getContext('2d');
+
+function onMarketClick(market) {
+  if (currentMarket === market) return;
+  applyMarket(market);
+  render();
+  renderIndex(null);
+  drawChart();
+  window.stockApi.setMarket(market);
+}
+
+marketCnBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+marketUsBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+marketCnBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  onMarketClick('cn');
+});
+marketUsBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  onMarketClick('us');
+});
+
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function nameCellHtml(name, code) {
+  const n = escapeHtml(name || '--');
+  const c = escapeHtml(code || '');
+  return `<span class="name-text">${n}</span><span class="name-code">${c}</span>`;
+}
 
 function formatQuote(q) {
   const pct = Number(q?.pct);
@@ -79,20 +150,21 @@ function renderIndex(index) {
   indexPriceEl.textContent = price;
   indexPctEl.textContent = pctText;
   indexPctEl.className = `pct ${cls}`;
-  indexRowEl.classList.toggle('active', selectedSecId === INDEX_SECID);
+  indexRowEl.classList.toggle('active', selectedSecId === indexSecId());
 }
 
 function render() {
   listEl.innerHTML = '';
   quotes.forEach((q) => {
     const row = document.createElement('div');
-    const secId = toSecId(q.code);
+    const secId = rowSecId(q);
     row.className = 'row' + (secId === selectedSecId ? ' active' : '');
     row.dataset.secid = secId;
-    row.dataset.code = String(q.code).padStart(6, '0');
+    row.dataset.code = rowCode(q);
     const { cls, price, pctText } = formatQuote(q);
+    const full = `${q.name || ''} ${q.code || ''}`.trim();
     row.innerHTML = `
-      <div class="name" title="${q.name} (${q.code})">${q.name}</div>
+      <div class="name" title="${escapeHtml(full)}">${nameCellHtml(q.name, q.code)}</div>
       <div class="price">${price}</div>
       <div class="pct ${cls}">${pctText}</div>
     `;
@@ -110,6 +182,12 @@ function timeToX(time) {
   const mm = Number(parts[1]);
   if (!Number.isFinite(hh) || !Number.isFinite(mm)) return 0;
   const t = hh * 60 + mm;
+  if (currentMarket === 'us') {
+    const start = 21 * 60 + 30;
+    const span = 6 * 60 + 30;
+    const elapsed = t >= start ? t - start : 24 * 60 - start + t;
+    return Math.max(0, Math.min(1, elapsed / span));
+  }
   const am = 9 * 60 + 30;
   const noon = 11 * 60 + 30;
   const pm = 13 * 60;
@@ -128,7 +206,12 @@ function drawChart() {
 
   const points = trends?.points || [];
   const preClose = Number(trends?.preClose);
-  chartTitleEl.textContent = `分时 · ${trends?.name || '上证指数'}`;
+  const fallbackName = currentMarket === 'us' ? '纳斯达克100' : '上证指数';
+  const trendName =
+    trends?.secId === US_INDEX_SECID || trends?.code === 'NDX'
+      ? '纳斯达克100'
+      : trends?.name || fallbackName;
+  chartTitleEl.textContent = `分时 · ${trendName}`;
 
   if (!points.length || !Number.isFinite(preClose)) {
     ctx.fillStyle = 'rgba(234, 238, 245, 0.45)';
@@ -162,8 +245,9 @@ function drawChart() {
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(left + plotW * 0.5, top);
-  ctx.lineTo(left + plotW * 0.5, bottom);
+  const midX = currentMarket === 'us' ? left + plotW * ((3.5 * 60) / (6.5 * 60)) : left + plotW * 0.5;
+  ctx.moveTo(midX, top);
+  ctx.lineTo(midX, bottom);
   ctx.stroke();
 
   const preY = yAt(preClose);
@@ -177,8 +261,12 @@ function drawChart() {
 
   const last = points[points.length - 1].price;
   const up = last >= preClose;
-  const stroke = up ? '#ff6b6e' : '#3ddc84';
-  const fill = up ? 'rgba(255, 107, 110, 0.22)' : 'rgba(61, 220, 132, 0.18)';
+  const stroke = currentMarket === 'us'
+    ? (up ? '#3ddc84' : '#ff6b6e')
+    : (up ? '#ff6b6e' : '#3ddc84');
+  const fill = currentMarket === 'us'
+    ? (up ? 'rgba(61, 220, 132, 0.18)' : 'rgba(255, 107, 110, 0.22)')
+    : (up ? 'rgba(255, 107, 110, 0.22)' : 'rgba(61, 220, 132, 0.18)');
 
   ctx.beginPath();
   points.forEach((p, i) => {
@@ -222,14 +310,15 @@ function drawChart() {
   ctx.fillStyle = 'rgba(234, 238, 245, 0.45)';
   ctx.font = '10px Microsoft YaHei';
   ctx.textAlign = 'left';
-  ctx.fillText('9:30', left, height - 2);
+  ctx.fillText(currentMarket === 'us' ? '21:30' : '9:30', left, height - 2);
   ctx.textAlign = 'center';
-  ctx.fillText('11:30/13:00', left + plotW * 0.5, height - 2);
+  ctx.fillText(currentMarket === 'us' ? '01:00' : '11:30/13:00', left + plotW * 0.5, height - 2);
   ctx.textAlign = 'right';
-  ctx.fillText('15:00', right, height - 2);
+  ctx.fillText(currentMarket === 'us' ? '04:00' : '15:00', right, height - 2);
 }
 
 window.stockApi.onQuotesUpdate((data) => {
+  if (data.market) applyMarket(data.market);
   quotes = data.quotes || [];
   if (data.selectedSecId) selectedSecId = data.selectedSecId;
   trends = data.trends || trends;
@@ -352,7 +441,7 @@ panelEl.addEventListener('mouseleave', (e) => {
 
 panelEl.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
-  if (e.target.closest && e.target.closest('#theme-btn')) return;
+  if (e.target.closest && (e.target.closest('#theme-btn') || e.target.closest('#market-switch'))) return;
   dragging = true;
   dragMoved = false;
   pendingSecId = findSecId(e.target);
@@ -393,4 +482,5 @@ window.addEventListener('mouseup', () => {
 window.addEventListener('resize', () => drawChart());
 window.stockApi.getConfig().then((cfg) => {
   applyTheme(cfg && cfg.theme);
+  applyMarket(cfg && cfg.market);
 });

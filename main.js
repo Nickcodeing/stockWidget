@@ -14,6 +14,10 @@ const fs = require('fs');
 const https = require('https');
 
 const QUOTE_TIMEOUT_MS = 4000;
+const EASTMONEY_HOSTS = [
+  'https://push2.eastmoney.com',
+  'https://push2delay.eastmoney.com'
+];
 const QUOTE_HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -24,6 +28,9 @@ let win;
 let tray;
 let config;
 let refreshTimer;
+let marketWasOpen = false;
+const CLOSED_WAKE_MS = 60 * 1000;
+const WEEKDAYS = new Set(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
 let clickThroughEnabled = true;
 let userPrefClickThrough = true;
 let pointerOver = false;
@@ -33,12 +40,14 @@ let lastTrends = null;
 let savePosTimer = null;
 let pendingFocusIndex;
 let quoteGen = 0;
+let fileWatchers = [];
 
 const WINDOW_WIDTH = 328;
 const WINDOW_HEIGHT = 292;
 const DEFAULT_POSITION = { x: 1569, y: 748 };
-const INDEX_SECID = '1.000001';
-let selectedSecId = INDEX_SECID;
+const CN_INDEX_SECID = '1.000001';
+const US_INDEX_SECID = '100.NDX';
+let selectedSecId = CN_INDEX_SECID;
 
 function positionPath() {
   return path.join(__dirname, 'position.json');
@@ -85,10 +94,32 @@ function configPath() {
   return path.join(__dirname, 'stocks.json');
 }
 
+function currentMarket() {
+  return config && config.market === 'us' ? 'us' : 'cn';
+}
+
+function indexSecId() {
+  return currentMarket() === 'us' ? US_INDEX_SECID : CN_INDEX_SECID;
+}
+
+function currentStocks() {
+  const key = currentMarket() === 'us' ? 'usStocks' : 'stocks';
+  return Array.isArray(config[key]) ? config[key] : [];
+}
+
+function normalizeUsTicker(code) {
+  return String(code || '')
+    .trim()
+    .replace(/^\$/, '')
+    .toUpperCase();
+}
+
 function loadConfig() {
   config = JSON.parse(fs.readFileSync(configPath(), 'utf-8'));
   userPrefClickThrough = config.clickThrough !== false;
   if (config.theme !== 'moon') config.theme = 'sun';
+  if (config.market !== 'us') config.market = 'cn';
+  if (!Array.isArray(config.usStocks)) config.usStocks = [];
   return config;
 }
 
@@ -97,31 +128,37 @@ function saveConfig() {
 }
 
 function stockIndex(code) {
+  const list = currentStocks();
+  if (currentMarket() === 'us') {
+    const ticker = normalizeUsTicker(code);
+    return list.findIndex((c) => normalizeUsTicker(c) === ticker);
+  }
   const padded = String(code).replace(/\D/g, '').padStart(6, '0');
-  return (config.stocks || []).findIndex(
-    (c) => String(c).replace(/\D/g, '').padStart(6, '0') === padded
-  );
+  return list.findIndex((c) => String(c).replace(/\D/g, '').padStart(6, '0') === padded);
 }
 
 function reorderStock(code, action) {
   loadConfig();
+  const key = currentMarket() === 'us' ? 'usStocks' : 'stocks';
+  const list = currentStocks();
   const i = stockIndex(code);
-  if (i < 0 || !Array.isArray(config.stocks)) return;
-  const item = config.stocks[i];
+  if (i < 0 || !Array.isArray(list)) return;
+  const item = list[i];
   if (action === 'top' && i > 0) {
-    config.stocks.splice(i, 1);
-    config.stocks.unshift(item);
+    list.splice(i, 1);
+    list.unshift(item);
   } else if (action === 'up' && i > 0) {
-    const prev = config.stocks[i - 1];
-    config.stocks[i - 1] = item;
-    config.stocks[i] = prev;
-  } else if (action === 'down' && i < config.stocks.length - 1) {
-    const next = config.stocks[i + 1];
-    config.stocks[i + 1] = item;
-    config.stocks[i] = next;
+    const prev = list[i - 1];
+    list[i - 1] = item;
+    list[i] = prev;
+  } else if (action === 'down' && i < list.length - 1) {
+    const next = list[i + 1];
+    list[i + 1] = item;
+    list[i] = next;
   } else {
     return;
   }
+  config[key] = list;
   saveConfig();
   pendingFocusIndex = stockIndex(code);
   refreshQuotes();
@@ -138,22 +175,48 @@ function normalizeDiff(diff) {
   return Object.values(diff);
 }
 
-function toQuote(x) {
-  return { code: x.f12, name: x.f14, price: x.f2, pct: x.f3 };
+function toQuote(x, extras) {
+  const market = Number(x.f13);
+  const code = x.f12;
+  const secId = Number.isFinite(market) ? `${market}.${code}` : String(code);
+  return {
+    code,
+    name: x.f14,
+    price: x.f2,
+    pct: x.f3,
+    secId,
+    ...(extras || {})
+  };
 }
 
 function isShanghaiIndex(x) {
   return String(x.f12).padStart(6, '0') === '000001' && Number(x.f13) === 1;
 }
 
-function fetchQuotes(codes) {
-  const padded = (codes || []).map((c) => String(c).replace(/\D/g, '').padStart(6, '0'));
-  const secids = ['1.000001', ...padded.map(toSecId)].join(',');
-  const url =
-    'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2' +
+function isNasdaq100(x) {
+  return String(x.f12).toUpperCase() === 'NDX' && Number(x.f13) === 100;
+}
+
+function usMarketRank(x) {
+  const m = Number(x.f13);
+  if (m === 105) return 0;
+  if (m === 106) return 1;
+  if (m === 107) return 2;
+  return 9;
+}
+
+function fetchQuotes() {
+  return currentMarket() === 'us' ? fetchUsQuotes() : fetchCnQuotes();
+}
+
+function fetchCnQuotes() {
+  const padded = currentStocks().map((c) => String(c).replace(/\D/g, '').padStart(6, '0'));
+  const secids = [CN_INDEX_SECID, ...padded.map(toSecId)].join(',');
+  const pathQuery =
+    '/api/qt/ulist.np/get?fltt=2' +
     `&fields=f12,f13,f14,f2,f3&secids=${secids}`;
 
-  return requestText(url).then((raw) => {
+  return requestEastmoney(pathQuery).then((raw) => {
     const json = JSON.parse(raw);
     const list = normalizeDiff(json?.data?.diff);
     const indexItem = list.find(isShanghaiIndex) || list.find((x) => x.f14 === '上证指数');
@@ -164,7 +227,44 @@ function fetchQuotes(codes) {
     );
     return {
       quotes: padded.map((c) => map.get(c)).filter(Boolean),
-      index: indexItem ? toQuote(indexItem) : null
+      index: indexItem ? toQuote(indexItem, { name: '上证指数', secId: CN_INDEX_SECID }) : null
+    };
+  });
+}
+
+function fetchUsQuotes() {
+  const tickers = [...new Set(currentStocks().map(normalizeUsTicker).filter(Boolean))];
+  const secids = [
+    US_INDEX_SECID,
+    ...tickers.flatMap((t) => [`105.${t}`, `106.${t}`, `107.${t}`])
+  ].join(',');
+  const pathQuery =
+    '/api/qt/ulist.np/get?fltt=2' +
+    `&fields=f12,f13,f14,f2,f3&secids=${secids}`;
+
+  return requestEastmoney(pathQuery).then((raw) => {
+    const json = JSON.parse(raw);
+    const list = normalizeDiff(json?.data?.diff);
+    const indexItem = list.find(isNasdaq100);
+    const map = new Map();
+    list
+      .filter((x) => !isNasdaq100(x) && Number.isFinite(Number(x.f2)))
+      .forEach((x) => {
+        const ticker = String(x.f12 || '').toUpperCase();
+        if (!ticker) return;
+        const prev = map.get(ticker);
+        if (!prev || usMarketRank(x) < usMarketRank(prev)) map.set(ticker, x);
+      });
+    return {
+      quotes: tickers
+        .map((t) => {
+          const x = map.get(t);
+          return x ? toQuote(x, { code: t }) : null;
+        })
+        .filter(Boolean),
+      index: indexItem
+        ? toQuote(indexItem, { name: '纳斯达克100', secId: US_INDEX_SECID })
+        : { code: 'NDX', name: '纳斯达克100', price: '-', pct: null, secId: US_INDEX_SECID }
     };
   });
 }
@@ -180,12 +280,12 @@ function parseTrendLine(line) {
 }
 
 function fetchTrends(secid) {
-  const url =
-    'https://push2.eastmoney.com/api/qt/stock/trends2/get?' +
+  const pathQuery =
+    '/api/qt/stock/trends2/get?' +
     `secid=${encodeURIComponent(secid)}&ndays=1&iscr=0&fltt=2` +
     '&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13' +
     '&fields2=f51,f52,f53,f54,f55,f56,f57,f58';
-  return requestText(url).then((raw) => {
+  return requestEastmoney(pathQuery).then((raw) => {
     const json = JSON.parse(raw);
     const d = json?.data || {};
     const points = (d.trends || [])
@@ -198,6 +298,13 @@ function fetchTrends(secid) {
       preClose: Number(d.preClose),
       points
     };
+  });
+}
+
+function requestEastmoney(pathQuery) {
+  return Promise.any(EASTMONEY_HOSTS.map((host) => requestText(host + pathQuery))).catch((err) => {
+    const first = err && err.errors && err.errors[0] ? err.errors[0] : err;
+    throw first;
   });
 }
 
@@ -251,15 +358,18 @@ function requestWithHttps(url) {
   });
 }
 
+function pushQuotesToRenderer() {
+  if (!lastPayload || !win || win.isDestroyed()) return;
+  win.webContents.send('quotes-update', lastPayload);
+}
+
 function sendQuotes(payload) {
   if (Number.isFinite(pendingFocusIndex)) {
     payload.focusIndex = pendingFocusIndex;
     pendingFocusIndex = undefined;
   }
   lastPayload = payload;
-  if (win && !win.isDestroyed() && !win.webContents.isLoading()) {
-    win.webContents.send('quotes-update', payload);
-  }
+  pushQuotesToRenderer();
 }
 
 function refreshQuotes() {
@@ -272,10 +382,10 @@ function refreshQuotes() {
     console.error('[stock-widget] config error:', err);
     return;
   }
-  fetchQuotes(config.stocks)
+  fetchQuotes()
     .catch((err) => {
       console.error('[stock-widget] fetch retry:', err.message || err);
-      return fetchQuotes(config.stocks);
+      return fetchQuotes();
     })
     .then((quoteData) =>
       fetchTrends(selectedSecId)
@@ -293,10 +403,16 @@ function refreshQuotes() {
         index: quoteData.index,
         trends,
         selectedSecId,
+        market: currentMarket(),
         opacity: config.opacity ?? 0.88
       });
     })
-    .catch((err) => console.error('[stock-widget] fetch error:', err))
+    .catch((err) => {
+      console.error('[stock-widget] fetch error:', err);
+      if (!lastPayload) {
+        setTimeout(() => refreshQuotes(), 3000);
+      }
+    })
     .finally(() => {
       if (gen === quoteGen) fetching = false;
     });
@@ -322,13 +438,79 @@ function syncClickThrough() {
   applyClickThrough(effectiveClickThrough());
 }
 
+function zonedClock(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+    hour: 'numeric',
+    minute: 'numeric',
+    hourCycle: 'h23'
+  }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  let hour = Number(get('hour'));
+  if (hour === 24) hour = 0;
+  return {
+    weekday: get('weekday'),
+    minutes: hour * 60 + Number(get('minute'))
+  };
+}
+
+function isCnSession(date) {
+  const { weekday, minutes } = zonedClock(date, 'Asia/Shanghai');
+  if (!WEEKDAYS.has(weekday)) return false;
+  const morning = minutes >= 9 * 60 + 15 && minutes < 11 * 60 + 30;
+  const afternoon = minutes >= 13 * 60 && minutes <= 15 * 60;
+  return morning || afternoon;
+}
+
+function isUsSession(date) {
+  const { weekday, minutes } = zonedClock(date, 'America/New_York');
+  if (!WEEKDAYS.has(weekday)) return false;
+  return minutes >= 9 * 60 + 30 && minutes < 16 * 60;
+}
+
+function isCurrentMarketOpen() {
+  const now = new Date();
+  return currentMarket() === 'us' ? isUsSession(now) : isCnSession(now);
+}
+
+function stopRefresh() {
+  if (!refreshTimer) return;
+  clearTimeout(refreshTimer);
+  clearInterval(refreshTimer);
+  refreshTimer = null;
+}
+
+function refreshLoop() {
+  const open = isCurrentMarketOpen();
+  if (open || !lastPayload) {
+    refreshQuotes();
+    marketWasOpen = open;
+    refreshTimer = setTimeout(
+      refreshLoop,
+      open ? config.refreshIntervalMs || 5000 : 3000
+    );
+    return;
+  }
+  if (marketWasOpen) {
+    refreshQuotes();
+    marketWasOpen = false;
+  }
+  refreshTimer = setTimeout(refreshLoop, CLOSED_WAKE_MS);
+}
+
 function startRefresh() {
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(refreshQuotes, config.refreshIntervalMs || 5000);
+  stopRefresh();
+  if (!config) loadConfig();
+  marketWasOpen = isCurrentMarketOpen();
+  const delay = marketWasOpen ? config.refreshIntervalMs || 5000 : CLOSED_WAKE_MS;
+  refreshTimer = setTimeout(refreshLoop, delay);
 }
 
 function reloadAll() {
   loadConfig();
+  selectedSecId = indexSecId();
+  lastTrends = null;
   refreshQuotes();
   startRefresh();
   syncClickThrough();
@@ -375,7 +557,7 @@ function toggleWidget() {
 function updateTray() {
   if (!tray) return;
   const visible = isWidgetVisible();
-  tray.setToolTip(visible ? 'A股悬浮行情（点击隐藏）' : 'A股悬浮行情（点击显示）');
+  tray.setToolTip(visible ? '悬浮行情（点击隐藏）' : '悬浮行情（点击显示）');
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
@@ -405,6 +587,47 @@ function createTray() {
   tray = new Tray(icon);
   updateTray();
   tray.on('click', () => toggleWidget());
+}
+
+function debounce(fn, ms) {
+  let timer;
+  return () => {
+    clearTimeout(timer);
+    timer = setTimeout(fn, ms);
+  };
+}
+
+function watchDevReload() {
+  if (app.isPackaged) return;
+  const reloadRenderer = debounce(() => {
+    if (win && !win.isDestroyed()) win.webContents.reloadIgnoringCache();
+  }, 250);
+  const relaunchApp = debounce(() => {
+    app.relaunch();
+    app.exit(0);
+  }, 400);
+  const reloadCfg = debounce(() => reloadAll(), 250);
+
+  try {
+    fileWatchers.push(
+      fs.watch(path.join(__dirname, 'renderer'), { recursive: true }, reloadRenderer)
+    );
+    fileWatchers.push(
+      fs.watch(__dirname, (_, filename) => {
+        if (!filename) return;
+        if (filename === 'stocks.json') {
+          reloadCfg();
+          return;
+        }
+        if (filename === 'main.js' || filename === 'preload.js' || filename === 'icon.png') {
+          relaunchApp();
+        }
+      })
+    );
+    console.log('[stock-widget] 开发热更新已开启：改界面会刷新窗口，改主进程会自动重启');
+  } catch (err) {
+    console.error('[stock-widget] watch error:', err);
+  }
 }
 
 function registerShortcuts() {
@@ -444,9 +667,7 @@ function createWindow() {
 
   win.webContents.on('did-finish-load', () => {
     syncClickThrough();
-    if (lastPayload) {
-      win.webContents.send('quotes-update', lastPayload);
-    }
+    pushQuotesToRenderer();
   });
 }
 
@@ -457,15 +678,31 @@ ipcMain.handle('set-theme', (_, theme) => {
   saveConfig();
   return config.theme;
 });
+ipcMain.handle('set-market', (_, market) => {
+  loadConfig();
+  const next = market === 'us' ? 'us' : 'cn';
+  if (config.market !== next) {
+    config.market = next;
+    saveConfig();
+    selectedSecId = indexSecId();
+    lastTrends = null;
+    lastPayload = null;
+    pendingFocusIndex = 0;
+  }
+  refreshQuotes();
+  startRefresh();
+  return config.market;
+});
 ipcMain.handle('reload-config', () => reloadAll());
 ipcMain.handle('toggle-click-through', () => toggleClickThrough());
 
 ipcMain.handle('stock-order-info', (_, code) => {
   loadConfig();
+  const list = currentStocks();
   const i = stockIndex(code);
   return {
     index: i,
-    total: Array.isArray(config.stocks) ? config.stocks.length : 0
+    total: list.length
   };
 });
 
@@ -483,7 +720,8 @@ ipcMain.on('select-trend', (_, secId) => {
       sendQuotes({
         ...(lastPayload || { quotes: [], index: null }),
         trends,
-        selectedSecId
+        selectedSecId,
+        market: currentMarket()
       });
     })
     .catch((err) => console.error('[stock-widget] trends error:', err));
@@ -510,11 +748,14 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    loadConfig();
+    selectedSecId = indexSecId();
     createWindow();
     createTray();
     registerShortcuts();
     refreshQuotes();
     startRefresh();
+    watchDevReload();
   });
 }
 
@@ -523,7 +764,15 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
-  if (refreshTimer) clearInterval(refreshTimer);
+  stopRefresh();
+  fileWatchers.forEach((w) => {
+    try {
+      w.close();
+    } catch (_) {
+      /* ignore */
+    }
+  });
+  fileWatchers = [];
   clearTimeout(savePosTimer);
   savePosition();
   globalShortcut.unregisterAll();

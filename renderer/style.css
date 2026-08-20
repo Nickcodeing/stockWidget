@@ -1,6 +1,8 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html {
+  --up: #ff6b6e;
+  --down: #3ddc84;
   --text: #eef1f6;
   --text-dim: rgba(234, 238, 245, 0.62);
   --text-soft: rgba(234, 238, 245, 0.78);
@@ -16,6 +18,11 @@ html {
   --index-line: rgba(255, 255, 255, 0.16);
   --index-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
   --menu-hover: rgba(255, 255, 255, 0.1);
+}
+
+html[data-market="us"] {
+  --up: #3ddc84;
+  --down: #ff6b6e;
 }
 
 html[data-theme="moon"] {
@@ -84,6 +91,33 @@ html, body {
   gap: 8px;
 }
 
+#market-switch {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.market-btn {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.market-btn.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.market-sep {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
 #clock {
   font-variant-numeric: tabular-nums;
   color: var(--text-soft);
@@ -135,7 +169,7 @@ html[data-theme="moon"] .icon-sun {
 
 .row {
   display: grid;
-  grid-template-columns: 1.3fr 1fr 0.9fr;
+  grid-template-columns: 1.45fr 0.9fr 0.85fr;
   gap: 8px;
   height: 28px;
   line-height: 28px;
@@ -165,9 +199,27 @@ html[data-theme="moon"] .icon-sun {
 }
 
 .name {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.name-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+
+.name-code {
+  flex: 0 0 auto;
+  margin-left: 3px;
+  font-size: 10px;
+  line-height: 28px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
 }
 
 .price,
@@ -213,8 +265,8 @@ html[data-theme="moon"] .icon-sun {
   font-weight: 600;
 }
 
-.up { color: #ff6b6e; }
-.down { color: #3ddc84; }
+.up { color: var(--up); }
+.down { color: var(--down); }
 .flat { color: rgba(220, 224, 230, 0.78); }
 
 #ctx-menu {

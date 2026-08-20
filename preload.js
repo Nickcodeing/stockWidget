@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('stockApi', {
   getStockOrder: (code) => ipcRenderer.invoke('stock-order-info', code),
   reorderStock: (code, action) => ipcRenderer.send('reorder-stock', { code, action }),
   setTheme: (theme) => ipcRenderer.invoke('set-theme', theme),
+  setMarket: (market) => ipcRenderer.invoke('set-market', market),
   moveWindow: (dx, dy) => ipcRenderer.send('move-window', dx, dy),
   onQuotesUpdate: (cb) => {
     ipcRenderer.on('quotes-update', (_, data) => cb(data));
