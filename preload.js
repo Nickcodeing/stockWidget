@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('stockApi', {
     ipcRenderer.on('quotes-update', (_, data) => cb(data));
   },
   onClickThroughChanged: (cb) => {
-    ipcRenderer.on('click-through-changed', (_, enabled) => cb(enabled));
+    ipcRenderer.on('click-through-changed', (_, enabled, pref) => cb(enabled, pref));
   },
   onWidgetReset: (cb) => {
     ipcRenderer.on('widget-reset', () => cb());

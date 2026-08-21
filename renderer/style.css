@@ -54,7 +54,8 @@ html, body {
 
 #panel,
 #ctx-menu,
-#src-menu {
+#src-menu,
+#hover-tip {
   color: var(--text);
   background:
     linear-gradient(165deg, var(--glass-1) 0%, var(--glass-2) 42%, var(--glass-3) 100%),
@@ -143,6 +144,14 @@ html, body {
   place-items: center;
 }
 
+html[data-theme="sun"] #theme-btn {
+  color: #f3d27a;
+}
+
+html[data-theme="moon"] #theme-btn {
+  color: #c5d4ea;
+}
+
 #theme-btn:hover {
   background: var(--menu-hover);
 }
@@ -190,7 +199,7 @@ html[data-theme="moon"] .icon-sun {
 
 .row {
   display: grid;
-  grid-template-columns: 1.45fr 0.9fr 0.85fr;
+  grid-template-columns: 1.3fr 1.15fr 0.75fr;
   gap: 8px;
   height: 28px;
   line-height: 28px;
@@ -236,20 +245,64 @@ html[data-theme="moon"] .icon-sun {
   min-width: 0;
 }
 
-.name-code {
+#index .name-text {
   flex: 0 0 auto;
+  min-width: auto;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.name-code {
+  flex: 0 1 auto;
+  min-width: 0;
   margin-left: 3px;
   font-size: 10px;
   line-height: 28px;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
   color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .price,
 .pct {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+#list .price.has-cost {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.05;
+}
+
+#list .price.has-cost .price-now {
+  line-height: 13px;
+}
+
+#list .price-cost {
+  font-size: 9px;
+  line-height: 11px;
+  font-weight: 400;
+  color: var(--text-dim);
+  pointer-events: none;
+  white-space: nowrap;
+  letter-spacing: -0.02em;
+}
+
+#list .cost-pnl.up {
+  color: var(--up);
+}
+
+#list .cost-pnl.down {
+  color: var(--down);
+}
+
+#list .cost-pnl.flat {
+  color: var(--text-dim);
 }
 
 #index {
@@ -334,6 +387,19 @@ html[data-theme="moon"] .icon-sun {
 #ctx-menu button:hover:not(:disabled),
 #src-menu button:hover:not(:disabled) {
   background: var(--menu-hover);
+}
+
+#hover-tip {
+  position: fixed;
+  z-index: 40;
+  max-width: 240px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text);
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 #src-menu button.active {

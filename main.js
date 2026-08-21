@@ -10,6 +10,11 @@ const {
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+
+process.on('uncaughtException', (err) => {
+  console.error('[stock-widget] uncaught:', err);
+});
+
 const {
   QUOTE_PROVIDERS,
   normalizeProviderId,
@@ -42,7 +47,7 @@ const WINDOW_WIDTH = 328;
 const WINDOW_HEIGHT = 292;
 const DEFAULT_POSITION = { x: 1569, y: 748 };
 const DEFAULT_CN_INDEX = { secId: '1.000001', name: '上证指数' };
-const DEFAULT_US_INDEX = { secId: '100.NDX', name: '纳斯达克100' };
+const DEFAULT_US_INDEX = { secId: '100.NDX100', name: '纳斯达克100' };
 let selectedSecId = DEFAULT_CN_INDEX.secId;
 
 function positionPath() {
@@ -102,7 +107,7 @@ function defaultConfig() {
     theme: 'sun',
     market: 'cn',
     cnIndex: { secId: '1.000001', name: '上证指数' },
-    usIndex: { secId: '100.NDX', name: '纳斯达克100' },
+    usIndex: { secId: '100.NDX100', name: '纳斯达克100' },
     stocks: [],
     usStocks: [],
     quoteProvider: 'eastmoney'
@@ -161,6 +166,10 @@ function currentStocks() {
   return Array.isArray(config[key]) ? config[key] : [];
 }
 
+function currentStockCodes() {
+  return currentStocks().map((item) => item.code);
+}
+
 function normalizeUsTicker(code) {
   return String(code || '')
     .trim()
@@ -168,29 +177,133 @@ function normalizeUsTicker(code) {
     .toUpperCase();
 }
 
-function loadConfig() {
-  ensureConfigFile();
-  config = JSON.parse(fs.readFileSync(configPath(), 'utf-8'));
+function parseCostNumber(raw) {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function sanitizeConfigText(text) {
+  let s = String(text || '').replace(/^\uFEFF/, '');
+  s = s.replace(/,(\s*[}\]])/g, '$1');
+  s = s.replace(/:\s*(-?)0+(\d+(?:\.\d+)?)\b/g, (_, sign, rest) => `: ${sign}${Number(rest)}`);
+  return s;
+}
+
+function tryParseJson(text) {
+  try {
+    const data = JSON.parse(text);
+    return data && typeof data === 'object' ? data : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readConfigObject() {
+  const text = fs.readFileSync(configPath(), 'utf-8');
+  return tryParseJson(text) || tryParseJson(sanitizeConfigText(text));
+}
+
+function parseStockEntry(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return { code: String(raw.code ?? '').trim(), cost: parseCostNumber(raw.cost) };
+  }
+  const s = String(raw ?? '').trim();
+  const i = s.lastIndexOf(':');
+  if (i > 0) {
+    return { code: s.slice(0, i).trim(), cost: parseCostNumber(s.slice(i + 1)) };
+  }
+  return { code: s, cost: 0 };
+}
+
+function normalizeStockEntry(item, us) {
+  const parsed = parseStockEntry(item);
+  const code = us
+    ? normalizeUsTicker(parsed.code)
+    : String(parsed.code).replace(/\D/g, '').padStart(6, '0');
+  if (!code || (!us && code === '000000')) return null;
+  return { code, cost: parsed.cost };
+}
+
+function serializeStockEntry(item) {
+  return {
+    code: item && item.code ? item.code : '',
+    cost: parseCostNumber(item && item.cost)
+  };
+}
+
+function normalizeStockLists() {
+  config.stocks = (Array.isArray(config.stocks) ? config.stocks : [])
+    .map((item) => normalizeStockEntry(item, false))
+    .filter(Boolean);
+  config.usStocks = (Array.isArray(config.usStocks) ? config.usStocks : [])
+    .map((item) => normalizeStockEntry(item, true))
+    .filter(Boolean);
+}
+
+function quoteCostKey(code) {
+  if (currentMarket() === 'us') return normalizeUsTicker(code);
+  return String(code || '').replace(/\D/g, '').padStart(6, '0');
+}
+
+function attachCosts(quotes) {
+  const costs = new Map();
+  currentStocks().forEach((item) => {
+    if (!item || !(item.cost > 0)) return;
+    costs.set(quoteCostKey(item.code), item.cost);
+  });
+  return (quotes || []).map((q) => {
+    const cost = costs.get(quoteCostKey(q && q.code));
+    return cost > 0 ? { ...q, cost } : q;
+  });
+}
+
+function applyLoadedConfig(data) {
+  config = { ...defaultConfig(), ...(data && typeof data === 'object' ? data : {}) };
   userPrefClickThrough = config.clickThrough === true;
   if (config.theme !== 'moon') config.theme = 'sun';
   if (config.market !== 'us') config.market = 'cn';
+  if (!Array.isArray(config.stocks)) config.stocks = [];
   if (!Array.isArray(config.usStocks)) config.usStocks = [];
+  try {
+    normalizeStockLists();
+  } catch (_) {
+    config.stocks = [];
+    config.usStocks = [];
+  }
   config.quoteProvider = normalizeProviderId(config.quoteProvider);
   return config;
 }
 
+function loadConfig() {
+  try {
+    ensureConfigFile();
+    const data = readConfigObject();
+    if (data) return applyLoadedConfig(data);
+  } catch (err) {
+    console.error('[stock-widget] config error:', err.message || err);
+  }
+  return applyLoadedConfig(defaultConfig());
+}
+
 function saveConfig() {
-  fs.writeFileSync(configPath(), `${JSON.stringify(config, null, 2)}\n`);
+  const out = {
+    ...config,
+    stocks: (Array.isArray(config.stocks) ? config.stocks : []).map(serializeStockEntry),
+    usStocks: (Array.isArray(config.usStocks) ? config.usStocks : []).map(serializeStockEntry)
+  };
+  fs.writeFileSync(configPath(), `${JSON.stringify(out, null, 2)}\n`);
 }
 
 function stockIndex(code) {
   const list = currentStocks();
   if (currentMarket() === 'us') {
     const ticker = normalizeUsTicker(code);
-    return list.findIndex((c) => normalizeUsTicker(c) === ticker);
+    return list.findIndex((c) => normalizeUsTicker(c.code) === ticker);
   }
-  const padded = String(code).replace(/\D/g, '').padStart(6, '0');
-  return list.findIndex((c) => String(c).replace(/\D/g, '').padStart(6, '0') === padded);
+  const padded = String(code || '')
+    .replace(/\D/g, '')
+    .padStart(6, '0');
+  return list.findIndex((c) => String(c.code).replace(/\D/g, '').padStart(6, '0') === padded);
 }
 
 function reorderStock(code, action) {
@@ -227,7 +340,7 @@ function currentProvider() {
 function fetchQuotes() {
   return getQuoteProvider(currentProvider().id).fetchQuotes({
     market: currentMarket(),
-    stocks: currentStocks(),
+    stocks: currentStockCodes(),
     indexSpec: currentIndex()
   });
 }
@@ -303,7 +416,7 @@ function refreshQuotes() {
       else failCount += 1;
       lastTrends = trends;
       sendQuotes({
-        quotes: quoteData.quotes,
+        quotes: attachCosts(quoteData.quotes),
         index: quoteData.index,
         trends,
         selectedSecId,
@@ -349,7 +462,7 @@ function applyClickThrough(enable) {
   if (enable) {
     win.setIgnoreMouseEvents(true, { forward: true });
   }
-  win.webContents.send('click-through-changed', clickThroughEnabled);
+  win.webContents.send('click-through-changed', clickThroughEnabled, userPrefClickThrough);
 }
 
 function effectiveClickThrough() {

@@ -1,7 +1,7 @@
 const ROW_H = 28;
 const VISIBLE = 3;
 const DEFAULT_CN_INDEX = { secId: '1.000001', name: '上证指数', code: '000001' };
-const DEFAULT_US_INDEX = { secId: '100.NDX', name: '纳斯达克100', code: 'NDX' };
+const DEFAULT_US_INDEX = { secId: '100.NDX100', name: '纳斯达克100', code: 'NDX100' };
 const DRAG_THRESHOLD = 5;
 
 let quotes = [];
@@ -67,6 +67,8 @@ const listEl = document.getElementById('list');
 const panelEl = document.getElementById('panel');
 const statusEl = document.getElementById('status');
 const clockEl = document.getElementById('clock');
+const hoverTipEl = document.getElementById('hover-tip');
+let hoverTipTimer = null;
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -96,6 +98,7 @@ const chartTitleEl = document.getElementById('chart-title');
 const ctx = chartEl.getContext('2d');
 let currentTheme = 'sun';
 let currentProvider = 'eastmoney';
+let clickThroughPref = false;
 const PROVIDERS = [
   { id: 'eastmoney', label: '东方财富', short: '东财' },
   { id: 'tencent', label: '腾讯财经', short: '腾讯' },
@@ -161,7 +164,9 @@ function onProviderClick(id) {
 function applyTheme(theme) {
   currentTheme = theme === 'moon' ? 'moon' : 'sun';
   document.documentElement.dataset.theme = currentTheme;
-  themeBtn.title = currentTheme === 'sun' ? '当前浅色，点击切换深色' : '当前深色，点击切换浅色';
+  themeBtn.dataset.tip = currentTheme === 'sun' ? '当前浅色，点击切换深色' : '当前深色，点击切换浅色';
+  themeBtn.classList.add('has-tip');
+  themeBtn.removeAttribute('title');
 }
 
 function applyMarket(market) {
@@ -173,6 +178,8 @@ function applyMarket(market) {
   marketUsBtn.classList.toggle('active', currentMarket === 'us');
   indexSpec = specForMarket(currentMarket);
   indexNameEl.innerHTML = nameCellHtml(indexSpec.name, indexSpec.code);
+  indexNameEl.dataset.tip = fullNameText(indexSpec.name, indexSpec.code);
+  indexNameEl.classList.remove('has-tip');
   chartMetaEl.textContent = currentMarket === 'us' ? '21:30-04:00' : '9:30-15:00';
   indexRowEl.dataset.secid = indexSecId();
   if (switched) {
@@ -253,6 +260,98 @@ function nameCellHtml(name, code) {
   return `<span class="name-text">${n}</span><span class="name-code">${c}</span>`;
 }
 
+function fullNameText(name, code) {
+  return `${name || ''} ${code || ''}`.trim();
+}
+
+function isTruncated(el) {
+  if (!el) return false;
+  return el.scrollWidth - el.clientWidth > 1 || el.scrollHeight - el.clientHeight > 1;
+}
+
+function setTipIfTruncated(host, parts, tip) {
+  if (!host) return;
+  if (tip && parts.some(isTruncated)) host.classList.add('has-tip');
+  else host.classList.remove('has-tip');
+}
+
+function hideHoverTip() {
+  clearTimeout(hoverTipTimer);
+  hoverTipTimer = null;
+  if (hoverTipEl) hoverTipEl.hidden = true;
+}
+
+function placeHoverTip(host) {
+  if (clickThroughPref) return;
+  const text = host && host.dataset.tip;
+  if (!text || !host.classList.contains('has-tip') || !hoverTipEl) return;
+  hoverTipEl.textContent = text;
+  hoverTipEl.hidden = false;
+  const r = host.getBoundingClientRect();
+  const pad = 6;
+  const tw = hoverTipEl.offsetWidth;
+  const th = hoverTipEl.offsetHeight;
+  let left = r.left;
+  let top = r.bottom + 4;
+  if (top + th > window.innerHeight - pad) top = r.top - th - 4;
+  if (left + tw > window.innerWidth - pad) left = window.innerWidth - tw - pad;
+  hoverTipEl.style.left = `${Math.max(pad, left)}px`;
+  hoverTipEl.style.top = `${Math.max(pad, top)}px`;
+}
+
+function scheduleHoverTip(host) {
+  hideHoverTip();
+  if (!host || dragging || clickThroughPref) return;
+  hoverTipTimer = setTimeout(() => placeHoverTip(host), 420);
+}
+
+function applyTruncationTips() {
+  listEl.querySelectorAll('.row:not(.missing-hint)').forEach((row) => {
+    const nameEl = row.querySelector('.name');
+    if (nameEl) {
+      setTipIfTruncated(
+        nameEl,
+        [nameEl, nameEl.querySelector('.name-text'), nameEl.querySelector('.name-code')],
+        nameEl.dataset.tip || ''
+      );
+    }
+    const priceEl = row.querySelector('.price');
+    if (priceEl) {
+      setTipIfTruncated(
+        priceEl,
+        [priceEl, priceEl.querySelector('.price-now'), priceEl.querySelector('.price-cost')],
+        priceEl.dataset.tip || ''
+      );
+    }
+  });
+  setTipIfTruncated(
+    indexNameEl,
+    [indexNameEl, indexNameEl.querySelector('.name-text'), indexNameEl.querySelector('.name-code')],
+    indexNameEl.dataset.tip || ''
+  );
+}
+
+function scheduleTruncationTips() {
+  requestAnimationFrame(applyTruncationTips);
+}
+
+function priceHoverText(q) {
+  const parts = [];
+  const price = Number(q && q.price);
+  if (Number.isFinite(price) && price > 0) parts.push(`现价 ${price.toFixed(2)}`);
+  const cost = Number(q && q.cost);
+  if (Number.isFinite(cost) && cost > 0) {
+    let s = `成本 ${cost.toFixed(2)}`;
+    if (Number.isFinite(price) && price > 0) {
+      const pnl = ((price - cost) / cost) * 100;
+      const sign = pnl > 0 ? '+' : '';
+      s += `(${sign}${pnl.toFixed(2)}%)`;
+    }
+    parts.push(s);
+  }
+  return parts.join('  ');
+}
+
 function formatQuote(q) {
   const pct = Number(q?.pct);
   const cls = !Number.isFinite(pct) || pct === 0 ? 'flat' : pct > 0 ? 'up' : 'down';
@@ -260,6 +359,20 @@ function formatQuote(q) {
   const price = q?.price == null || q.price === '-' ? '--' : Number(q.price).toFixed(2);
   const pctText = Number.isFinite(pct) ? `${sign}${pct.toFixed(2)}%` : '--';
   return { cls, price, pctText };
+}
+
+function costCellHtml(q) {
+  const cost = Number(q && q.cost);
+  if (!Number.isFinite(cost) || cost <= 0) return '';
+  const price = Number(q && q.price);
+  let pnlHtml = '';
+  if (Number.isFinite(price) && price > 0) {
+    const pnl = ((price - cost) / cost) * 100;
+    const cls = !Number.isFinite(pnl) || Math.abs(pnl) < 0.005 ? 'flat' : pnl > 0 ? 'up' : 'down';
+    const sign = pnl > 0 ? '+' : '';
+    pnlHtml = `<span class="cost-pnl ${cls}">(${sign}${pnl.toFixed(2)}%)</span>`;
+  }
+  return `<span class="price-cost">成本 ${cost.toFixed(2)}${pnlHtml}</span>`;
 }
 
 function renderIndex(index) {
@@ -274,9 +387,12 @@ function renderIndex(index) {
       code: index.code || indexSpec.code
     };
     indexNameEl.innerHTML = nameCellHtml(indexSpec.name, indexSpec.code);
+    indexNameEl.dataset.tip = fullNameText(indexSpec.name, indexSpec.code);
+    indexNameEl.classList.remove('has-tip');
     indexRowEl.dataset.secid = indexSpec.secId;
   }
   indexRowEl.classList.toggle('active', selectedSecId === indexSecId());
+  scheduleTruncationTips();
 }
 
 function isMissingQuote(q) {
@@ -288,6 +404,7 @@ function listItemCount() {
 }
 
 function render() {
+  hideHoverTip();
   listEl.innerHTML = '';
   quotes.forEach((q) => {
     const row = document.createElement('div');
@@ -296,10 +413,12 @@ function render() {
     row.dataset.secid = secId;
     row.dataset.code = rowCode(q);
     const { cls, price, pctText } = formatQuote(q);
-    const full = `${q.name || ''} ${q.code || ''}`.trim();
+    const costHtml = costCellHtml(q);
+    const full = fullNameText(q.name, q.code);
+    const priceTip = priceHoverText(q);
     row.innerHTML = `
-      <div class="name" title="${escapeHtml(full)}">${nameCellHtml(q.name, q.code)}</div>
-      <div class="price">${price}</div>
+      <div class="name" data-tip="${escapeHtml(full)}">${nameCellHtml(q.name, q.code)}</div>
+      <div class="price${costHtml ? ' has-cost' : ''}"${priceTip ? ` data-tip="${escapeHtml(priceTip)}"` : ''}><span class="price-now">${price}</span>${costHtml}</div>
       <div class="pct ${cls}">${pctText}</div>
     `;
     listEl.appendChild(row);
@@ -315,6 +434,7 @@ function render() {
   const maxScroll = Math.max(0, listItemCount() - VISIBLE);
   scrollIndex = Math.min(scrollIndex, maxScroll);
   listEl.style.transform = `translateY(${-scrollIndex * ROW_H}px)`;
+  scheduleTruncationTips();
 }
 
 function timeToX(time) {
@@ -524,11 +644,14 @@ function findSecId(target) {
   return row ? row.dataset.secid : null;
 }
 
-window.stockApi.onClickThroughChanged((enabled) => {
+window.stockApi.onClickThroughChanged((enabled, pref) => {
   statusEl.textContent = enabled ? '穿透' : '可交互';
+  clickThroughPref = typeof pref === 'boolean' ? pref : !!enabled;
+  if (clickThroughPref) hideHoverTip();
 });
 
 window.stockApi.onWidgetReset(() => {
+  hideHoverTip();
   resetPointerState();
 });
 
@@ -550,6 +673,7 @@ function hideCtxMenu() {
 }
 
 async function showCtxMenu(e, code) {
+  hideHoverTip();
   const info = await window.stockApi.getStockOrder(code);
   if (!info || info.index < 0) return;
   ctxCode = code;
@@ -621,8 +745,21 @@ panelEl.addEventListener('mouseenter', () => {
 
 panelEl.addEventListener('mouseleave', (e) => {
   if (ctxMenuEl.contains(e.relatedTarget) || srcMenuEl.contains(e.relatedTarget)) return;
+  hideHoverTip();
   hover = false;
   if (!dragging && ctxMenuEl.hidden && srcMenuEl.hidden) syncPointerOver();
+});
+
+panelEl.addEventListener('mouseover', (e) => {
+  const host = e.target.closest && e.target.closest('.has-tip');
+  if (!host) return;
+  scheduleHoverTip(host);
+});
+
+panelEl.addEventListener('mouseout', (e) => {
+  const from = e.target.closest && e.target.closest('.has-tip');
+  const to = e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.has-tip');
+  if (from && from !== to) hideHoverTip();
 });
 
 window.addEventListener('mouseout', (e) => {
@@ -633,6 +770,7 @@ window.addEventListener('mouseout', (e) => {
 
 panelEl.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
+  hideHoverTip();
   if (e.target.closest && (e.target.closest('#theme-btn') || e.target.closest('#market-switch') || e.target.closest('#src-btn') || e.target.closest('#src-menu'))) return;
   dragging = true;
   dragMoved = false;
@@ -675,6 +813,7 @@ window.addEventListener('mouseup', () => {
 window.addEventListener('resize', () => drawChart());
 window.stockApi.getConfig().then((cfg) => {
   savedCfg = cfg || null;
+  clickThroughPref = !!(cfg && cfg.clickThrough);
   applyTheme(cfg && cfg.theme);
   applyMarket(cfg && cfg.market);
   applyProvider(cfg && cfg.quoteProvider);
