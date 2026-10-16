@@ -269,14 +269,16 @@ function toggleAlertPanel() {
 function applyProvider(id, label, short) {
   if (id === 'crypto') {
     currentProvider = 'crypto';
-    srcBtn.textContent = short || '币安';
-    srcBtn.title = `数据来源：${label || '币安 / Gate'}（加密固定）`;
+    srcBtn.textContent = short || '多源';
+    srcBtn.title = `数据来源：${label || '币安 / Gate / OKX'}（谁先成功用谁，加密页不能手动切换）`;
+    srcBtn.style.cursor = 'default';
     return;
   }
   const meta = providerMeta(id);
   currentProvider = meta.id;
   srcBtn.textContent = short || meta.short;
   srcBtn.title = `数据来源：${label || meta.label}（点击切换）`;
+  srcBtn.style.cursor = 'pointer';
   srcMenuEl.querySelectorAll('button[data-provider]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.provider === currentProvider);
   });

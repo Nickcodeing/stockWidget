@@ -560,8 +560,8 @@ function quoteMeta(suggestSwitch) {
   if (currentMarket() === 'crypto') {
     return {
       quoteProvider: 'crypto',
-      quoteProviderLabel: '币安 / Gate',
-      quoteProviderShort: '币安',
+      quoteProviderLabel: '币安 / Gate / OKX',
+      quoteProviderShort: '多源',
       suggestSwitch: false
     };
   }
