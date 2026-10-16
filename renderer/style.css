@@ -396,10 +396,47 @@ html[data-theme="moon"] .icon-sun {
   color: #3ddc84;
 }
 
+#hint-row {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
 #hint {
   font-size: 10px;
   color: var(--text-dim);
-  margin-bottom: 8px;
+  min-width: 0;
+  flex: 1;
+  padding-right: 4px;
+}
+
+#scale-btn {
+  position: absolute;
+  right: 0;
+  top: 0;
+  border: 0;
+  padding: 0 0 0 12px;
+  background: linear-gradient(90deg, transparent, var(--glass-base) 28%, var(--glass-base));
+  color: var(--status);
+  font: inherit;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease;
+}
+
+#scale-btn.on {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+#scale-btn:hover {
+  color: var(--text-soft);
 }
 
 #hint.switch-hint {

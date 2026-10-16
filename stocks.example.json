@@ -6,6 +6,7 @@
   "market": "cn",
   "quoteProvider": "eastmoney",
   "alertSensitivity": 1,
+  "scale": 1,
   "cnIndex": {
     "secId": "1.000001",
     "name": "上证指数"

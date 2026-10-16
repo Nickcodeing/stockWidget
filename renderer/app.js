@@ -126,6 +126,7 @@ const alertPanelEl = document.getElementById('alert-panel');
 const alertListEl = document.getElementById('alert-list');
 const alertReadAllBtn = document.getElementById('alert-read-all');
 const hintEl = document.getElementById('hint');
+const scaleBtn = document.getElementById('scale-btn');
 const marketCnBtn = document.getElementById('market-cn');
 const marketUsBtn = document.getElementById('market-us');
 const marketCryptoBtn = document.getElementById('market-crypto');
@@ -282,6 +283,60 @@ function applyProvider(id, label, short) {
   srcMenuEl.querySelectorAll('button[data-provider]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.provider === currentProvider);
   });
+}
+
+const SCALE_HIDE_MS = 3000;
+let knownScalePct = null;
+let scaleHideTimer = null;
+
+function scalePercent(raw) {
+  const n = Number(raw);
+  const s = Number.isFinite(n) && n > 0 ? n : 1;
+  return Math.round(s * 100);
+}
+
+function scaleLabelVisible() {
+  return !!(scaleBtn && scaleBtn.classList.contains('on'));
+}
+
+function hideScaleLabel() {
+  if (!scaleBtn) return;
+  clearTimeout(scaleHideTimer);
+  scaleHideTimer = null;
+  scaleBtn.classList.remove('on');
+  hideHoverTip();
+}
+
+function scheduleHideScale() {
+  if (!scaleLabelVisible()) return;
+  clearTimeout(scaleHideTimer);
+  scaleHideTimer = setTimeout(() => {
+    if (scaleBtn && scaleBtn.matches(':hover')) {
+      scheduleHideScale();
+      return;
+    }
+    hideScaleLabel();
+  }, SCALE_HIDE_MS);
+}
+
+function revealScaleTemporarily() {
+  if (!scaleBtn) return;
+  scaleBtn.classList.add('on');
+  scheduleHideScale();
+}
+
+function applyScaleLabel(raw, opts) {
+  if (!scaleBtn) return;
+  const pct = scalePercent(raw);
+  const original = pct === 100;
+  const changed = knownScalePct != null && pct !== knownScalePct;
+  knownScalePct = pct;
+  scaleBtn.textContent = original ? '100% 原始' : `${pct}%`;
+  scaleBtn.classList.add('has-tip');
+  scaleBtn.dataset.tip = original
+    ? '原始大小 100% · Ctrl+滚轮缩放'
+    : `当前 ${pct}%（原始 100%）· Ctrl+滚轮缩放 · 点击还原原始大小`;
+  if ((opts && opts.reveal) || changed) revealScaleTemporarily();
 }
 
 function applyHint(suggestSwitch) {
@@ -960,6 +1015,15 @@ window.stockApi.onWidgetReset(() => {
 });
 
 window.addEventListener('wheel', (e) => {
+  if (e.ctrlKey) {
+    e.preventDefault();
+    if (window.stockApi && window.stockApi.nudgeScale) {
+      window.stockApi.nudgeScale(e.deltaY > 0 ? -1 : 1)
+        .then((s) => applyScaleLabel(s, { reveal: true }))
+        .catch(() => {});
+    }
+    return;
+  }
   if (alertPanelOpen()) {
     if (alertListEl && alertListEl.contains(e.target)) return;
     e.preventDefault();
@@ -1105,7 +1169,7 @@ window.addEventListener('mouseout', (e) => {
 panelEl.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   hideHoverTip();
-  if (e.target.closest && (e.target.closest('#theme-btn') || e.target.closest('#market-switch') || e.target.closest('#src-btn') || e.target.closest('#src-menu') || e.target.closest('#alert-btn') || e.target.closest('#alert-panel') || e.target.closest('.watch-star'))) return;
+  if (e.target.closest && (e.target.closest('#theme-btn') || e.target.closest('#market-switch') || e.target.closest('#src-btn') || e.target.closest('#src-menu') || e.target.closest('#alert-btn') || e.target.closest('#alert-panel') || e.target.closest('#scale-btn') || e.target.closest('.watch-star'))) return;
   dragging = true;
   dragMoved = false;
   pendingSecId = findSecId(e.target);
@@ -1144,12 +1208,29 @@ window.addEventListener('mouseup', () => {
   syncPointerOver();
 });
 
-window.addEventListener('resize', () => drawChart());
+window.addEventListener('resize', () => {
+  drawChart();
+  if (scaleLabelVisible()) scheduleHideScale();
+});
+if (scaleBtn) {
+  scaleBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+  scaleBtn.addEventListener('mouseleave', () => {
+    if (scaleLabelVisible()) scheduleHideScale();
+  });
+  scaleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (knownScalePct === 100) return;
+    window.stockApi.setScale(1).then((s) => applyScaleLabel(s, { reveal: true })).catch(() => {});
+  });
+}
+
+window.stockApi.onScaleChanged((scale) => applyScaleLabel(scale));
 window.stockApi.getConfig().then((cfg) => {
   savedCfg = cfg || null;
   clickThroughPref = !!(cfg && cfg.clickThrough);
   applyTheme(cfg && cfg.theme);
   applyMarket(cfg && cfg.market);
   applyProvider(cfg && cfg.quoteProvider);
+  applyScaleLabel(cfg && cfg.scale);
 });
 window.stockApi.getAlerts().then(applyAlerts).catch(() => {});

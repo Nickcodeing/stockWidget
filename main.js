@@ -69,6 +69,10 @@ const SESSION_GAP_MAX_MS = 24 * 60 * 60 * 1000;
 
 const WINDOW_WIDTH = 368;
 const WINDOW_HEIGHT = 292;
+const SCALE_MIN = 0.7;
+const SCALE_MAX = 1.6;
+const SCALE_STEP = 0.05;
+const SCALE_PRESETS = [0.8, 1, 1.2, 1.4];
 const DEFAULT_POSITION = { x: 1569, y: 748 };
 const DEFAULT_CN_INDEX = { secId: '1.000001', name: '上证指数' };
 const DEFAULT_US_INDEX = { secId: '100.NDX100', name: '纳斯达克100' };
@@ -95,16 +99,93 @@ function clampPosition(x, y, width, height) {
   };
 }
 
+function parseScale(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  const snapped = Math.round(n / SCALE_STEP) * SCALE_STEP;
+  return Math.min(SCALE_MAX, Math.max(SCALE_MIN, Math.round(snapped * 100) / 100));
+}
+
+function currentScale() {
+  return parseScale(config && config.scale);
+}
+
+function windowSize() {
+  const s = currentScale();
+  return {
+    width: Math.round(WINDOW_WIDTH * s),
+    height: Math.round(WINDOW_HEIGHT * s)
+  };
+}
+
+function fitScaleToWorkArea() {
+  const area = screen.getPrimaryDisplay().workAreaSize;
+  const maxS = Math.min(area.width / WINDOW_WIDTH, area.height / WINDOW_HEIGHT);
+  if (!(maxS > 0) || maxS >= 1) return 1;
+  return parseScale(maxS);
+}
+
+function ensureScale() {
+  if (!config) loadConfig();
+  if (Number.isFinite(Number(config.scale)) && Number(config.scale) > 0) {
+    config.scale = parseScale(config.scale);
+    return config.scale;
+  }
+  config.scale = fitScaleToWorkArea();
+  try {
+    saveConfig();
+  } catch (_) {
+    /* ignore */
+  }
+  return config.scale;
+}
+
+function applyWindowScale() {
+  if (!win || win.isDestroyed()) return currentScale();
+  const s = ensureScale();
+  const { width, height } = windowSize();
+  const [x, y] = win.getPosition();
+  const pos = clampPosition(x, y, width, height);
+  win.setBounds({ x: pos.x, y: pos.y, width, height });
+  try {
+    win.webContents.setZoomFactor(s);
+  } catch (_) {
+    /* not ready */
+  }
+  try {
+    win.webContents.send('scale-changed', s);
+  } catch (_) {
+    /* ignore */
+  }
+  return s;
+}
+
+function setScale(next) {
+  loadConfig();
+  const prev = currentScale();
+  config.scale = parseScale(next);
+  if (config.scale !== prev) saveConfig();
+  applyWindowScale();
+  updateTray();
+  return config.scale;
+}
+
+function nudgeScale(dir) {
+  const step = Number(dir) < 0 ? -SCALE_STEP : SCALE_STEP;
+  return setScale(currentScale() + step);
+}
+
 function loadPosition() {
+  const { width, height } = windowSize();
   try {
     const raw = JSON.parse(fs.readFileSync(positionPath(), 'utf-8'));
     if (Number.isFinite(raw.x) && Number.isFinite(raw.y)) {
-      return clampPosition(raw.x, raw.y, WINDOW_WIDTH, WINDOW_HEIGHT);
+      return clampPosition(raw.x, raw.y, width, height);
     }
   } catch (_) {
     /* use default */
   }
-  return clampPosition(DEFAULT_POSITION.x, DEFAULT_POSITION.y, WINDOW_WIDTH, WINDOW_HEIGHT);
+  return clampPosition(DEFAULT_POSITION.x, DEFAULT_POSITION.y, width, height);
 }
 
 function savePosition() {
@@ -450,6 +531,11 @@ function applyLoadedConfig(data) {
   }
   config.quoteProvider = normalizeProviderId(config.quoteProvider);
   config.alertSensitivity = parseAlertSensitivity(config.alertSensitivity);
+  if (data && Number.isFinite(Number(data.scale)) && Number(data.scale) > 0) {
+    config.scale = parseScale(data.scale);
+  } else {
+    delete config.scale;
+  }
   return config;
 }
 
@@ -1387,6 +1473,7 @@ function setQuoteProvider(id) {
 
 function reloadAll() {
   loadConfig();
+  applyWindowScale();
   lastTrends = null;
   failCount = 0;
   refreshQuotes();
@@ -1525,6 +1612,20 @@ function updateTray() {
       {
         label: '重新加载配置',
         click: () => reloadAll()
+      },
+      {
+        label: '窗口大小',
+        submenu: [
+          { label: '缩小', click: () => nudgeScale(-1) },
+          { label: '放大', click: () => nudgeScale(1) },
+          { type: 'separator' },
+          ...SCALE_PRESETS.map((s) => ({
+            label: `${Math.round(s * 100)}%`,
+            type: 'radio',
+            checked: currentScale() === s,
+            click: () => setScale(s)
+          }))
+        ]
       },
       {
         label: '数据来源',
@@ -1675,11 +1776,13 @@ function registerShortcuts() {
 
 function createWindow() {
   loadConfig();
+  ensureScale();
+  const size = windowSize();
   const pos = loadPosition();
 
   win = new BrowserWindow({
-    width: WINDOW_WIDTH,
-    height: WINDOW_HEIGHT,
+    width: size.width,
+    height: size.height,
     x: pos.x,
     y: pos.y,
     frame: false,
@@ -1700,6 +1803,12 @@ function createWindow() {
   win.setAlwaysOnTop(true, 'screen-saver');
 
   win.webContents.on('did-finish-load', () => {
+    try {
+      win.webContents.setVisualZoomLevelLimits(1, 1);
+    } catch (_) {
+      /* ignore */
+    }
+    applyWindowScale();
     syncClickThrough();
     pushQuotesToRenderer();
     sendAlertList();
@@ -1732,6 +1841,8 @@ ipcMain.handle('set-market', (_, market) => {
 ipcMain.handle('reload-config', () => reloadAll());
 ipcMain.handle('set-quote-provider', (_, id) => setQuoteProvider(id));
 ipcMain.handle('toggle-click-through', () => toggleClickThrough());
+ipcMain.handle('nudge-scale', (_, dir) => nudgeScale(dir));
+ipcMain.handle('set-scale', (_, next) => setScale(next));
 
 ipcMain.handle('stock-order-info', (_, code) => {
   loadConfig();

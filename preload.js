@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('stockApi', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   reloadConfig: () => ipcRenderer.invoke('reload-config'),
   toggleClickThrough: () => ipcRenderer.invoke('toggle-click-through'),
+  nudgeScale: (dir) => ipcRenderer.invoke('nudge-scale', dir),
+  setScale: (next) => ipcRenderer.invoke('set-scale', next),
   setPointerOver: (over) => ipcRenderer.send('pointer-over', over),
   selectTrend: (secId) => ipcRenderer.send('select-trend', secId),
   getStockOrder: (code) => ipcRenderer.invoke('stock-order-info', code),
@@ -27,5 +29,8 @@ contextBridge.exposeInMainWorld('stockApi', {
   },
   onWidgetReset: (cb) => {
     ipcRenderer.on('widget-reset', () => cb());
+  },
+  onScaleChanged: (cb) => {
+    ipcRenderer.on('scale-changed', (_, scale) => cb(scale));
   }
 });
