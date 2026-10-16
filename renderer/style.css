@@ -20,7 +20,8 @@ html {
   --menu-hover: rgba(255, 255, 255, 0.1);
 }
 
-html[data-market="us"] {
+html[data-market="us"],
+html[data-market="crypto"] {
   --up: #3ddc84;
   --down: #ff6b6e;
 }
@@ -55,7 +56,8 @@ html, body {
 #panel,
 #ctx-menu,
 #src-menu,
-#hover-tip {
+#hover-tip,
+#alert-panel {
   color: var(--text);
   background:
     linear-gradient(165deg, var(--glass-1) 0%, var(--glass-2) 42%, var(--glass-3) 100%),
@@ -69,6 +71,7 @@ html, body {
 }
 
 #panel {
+  position: relative;
   height: 100%;
   padding: 12px 14px 0;
   border-radius: 20px;
@@ -186,6 +189,213 @@ html[data-theme="moon"] .icon-sun {
   opacity: 0.85;
 }
 
+#alert-btn {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--status);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+#alert-btn:hover,
+#alert-btn.open {
+  background: var(--menu-hover);
+}
+
+#alert-btn.has-unread {
+  color: #f5c518;
+}
+
+#alert-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#alert-badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: #f5c518;
+  color: #1a1404;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+
+#alert-panel {
+  position: absolute;
+  z-index: 20;
+  left: 8px;
+  right: 8px;
+  top: 40px;
+  bottom: 8px;
+  padding: 8px 6px 6px;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  cursor: default;
+}
+
+#alert-panel[hidden] {
+  display: none !important;
+}
+
+#alert-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 8px 8px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+#alert-read-all {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--status);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+#alert-read-all:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+#alert-read-all:disabled {
+  opacity: 0.34;
+  cursor: default;
+}
+
+#alert-list {
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+#alert-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.alert-empty {
+  padding: 28px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.alert-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.alert-item:hover {
+  background: var(--menu-hover);
+}
+
+.alert-item.read {
+  opacity: 0.5;
+}
+
+.alert-dot {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: #f5c518;
+}
+
+.alert-item.read .alert-dot {
+  background: rgba(234, 238, 245, 0.22);
+}
+
+.alert-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.alert-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.alert-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.alert-time {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.alert-body {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.alert-move {
+  margin-right: 6px;
+}
+
+.alert-item[data-market="cn"] .alert-move.up,
+.alert-item[data-market="us"] .alert-move.down,
+.alert-item[data-market="crypto"] .alert-move.down {
+  color: #ff6b6e;
+}
+
+.alert-item[data-market="cn"] .alert-move.down,
+.alert-item[data-market="us"] .alert-move.up,
+.alert-item[data-market="crypto"] .alert-move.up {
+  color: #3ddc84;
+}
+
 #hint {
   font-size: 10px;
   color: var(--text-dim);
@@ -233,7 +443,7 @@ html[data-theme="moon"] .icon-sun {
 
 .name {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   min-width: 0;
   overflow: hidden;
 }
@@ -264,6 +474,65 @@ html[data-theme="moon"] .icon-sun {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.watch-star {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.watch-star svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+#list .row:hover .watch-star {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.watch-star.on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  color: #f5c518;
+}
+
+.watch-star.on svg {
+  fill: #f5c518;
+  stroke: #e6b400;
+}
+
+#list .row.big-move .watch-star.on svg {
+  filter: drop-shadow(0 0 3px rgba(245, 197, 24, 0.85));
+}
+
+#list .row.alert-flash {
+  animation: alert-flash 0.9s ease 3;
+}
+
+@keyframes alert-flash {
+  0%, 100% { background: transparent; }
+  50% { background: rgba(245, 197, 24, 0.28); }
 }
 
 .price,

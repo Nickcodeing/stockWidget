@@ -2,6 +2,7 @@ const ROW_H = 28;
 const VISIBLE = 3;
 const DEFAULT_CN_INDEX = { secId: '1.000001', name: '上证指数', code: '000001' };
 const DEFAULT_US_INDEX = { secId: '100.NDX100', name: '纳斯达克100', code: 'NDX100' };
+const DEFAULT_CRYPTO_INDEX = { secId: 'crypto.BTC.spot', name: '比特币', code: 'BTC' };
 const DRAG_THRESHOLD = 5;
 
 let quotes = [];
@@ -16,6 +17,8 @@ let selectedSecId = DEFAULT_CN_INDEX.secId;
 let trends = null;
 let savedCfg = null;
 let indexSpec = DEFAULT_CN_INDEX;
+const flashSecIds = new Set();
+let flashTimer = null;
 
 function parseIndexSpec(raw, fallback) {
   const codeFrom = (secId) => String(secId).slice(String(secId).indexOf('.') + 1);
@@ -39,9 +42,27 @@ function parseIndexSpec(raw, fallback) {
   return { secId: fallback.secId, name: fallback.name, code: fallback.code || codeFrom(fallback.secId) };
 }
 
+function normalizeMarket(market) {
+  if (market === 'us' || market === 'crypto') return market;
+  return 'cn';
+}
+
+function isGreenUpMarket() {
+  return currentMarket === 'us' || currentMarket === 'crypto';
+}
+
 function specForMarket(market) {
-  const us = market === 'us';
-  return parseIndexSpec(us ? savedCfg?.usIndex : savedCfg?.cnIndex, us ? DEFAULT_US_INDEX : DEFAULT_CN_INDEX);
+  const m = normalizeMarket(market);
+  if (m === 'us') return parseIndexSpec(savedCfg?.usIndex, DEFAULT_US_INDEX);
+  if (m === 'crypto') {
+    const spec = parseIndexSpec(savedCfg?.cryptoIndex, DEFAULT_CRYPTO_INDEX);
+    if (String(spec.secId || '').startsWith('crypto.')) {
+      const parts = String(spec.secId).split('.');
+      spec.code = parts[2] === 'perp' ? `${parts[1]}-PERP` : parts[1];
+    }
+    return spec;
+  }
+  return parseIndexSpec(savedCfg?.cnIndex, DEFAULT_CN_INDEX);
 }
 
 function indexSecId() {
@@ -50,13 +71,27 @@ function indexSecId() {
 
 function rowSecId(q) {
   if (q?.secId) return q.secId;
+  if (currentMarket === 'crypto') {
+    const code = String(q?.code || '').toUpperCase();
+    if (!code) return '';
+    if (code.endsWith('-PERP') || code.endsWith('PERP')) {
+      const base = code.replace(/-PERP$/, '').replace(/PERP$/, '');
+      return `crypto.${base}.perp`;
+    }
+    return `crypto.${code}.spot`;
+  }
   const c = String(q?.code || '').replace(/\D/g, '').padStart(6, '0');
   return `${c.startsWith('6') ? '1' : '0'}.${c}`;
 }
 
 function rowCode(q) {
-  if (currentMarket === 'us') return String(q.code || '').toUpperCase();
+  if (currentMarket === 'us' || currentMarket === 'crypto') return String(q.code || '').toUpperCase();
   return String(q.code).replace(/\D/g, '').padStart(6, '0');
+}
+
+function rowCodeLabel(q) {
+  if (currentMarket === 'crypto') return q.kindLabel || (String(q.code || '').endsWith('-PERP') ? '永续' : '现货');
+  return q.code;
 }
 
 function syncPointerOver() {
@@ -85,9 +120,15 @@ setInterval(tickClock, 1000);
 const themeBtn = document.getElementById('theme-btn');
 const srcBtn = document.getElementById('src-btn');
 const srcMenuEl = document.getElementById('src-menu');
+const alertBtn = document.getElementById('alert-btn');
+const alertBadgeEl = document.getElementById('alert-badge');
+const alertPanelEl = document.getElementById('alert-panel');
+const alertListEl = document.getElementById('alert-list');
+const alertReadAllBtn = document.getElementById('alert-read-all');
 const hintEl = document.getElementById('hint');
 const marketCnBtn = document.getElementById('market-cn');
 const marketUsBtn = document.getElementById('market-us');
+const marketCryptoBtn = document.getElementById('market-crypto');
 const chartMetaEl = document.getElementById('chart-meta');
 const indexNameEl = document.querySelector('#index-row .name');
 const indexRowEl = document.getElementById('index-row');
@@ -99,12 +140,14 @@ const ctx = chartEl.getContext('2d');
 let currentTheme = 'sun';
 let currentProvider = 'eastmoney';
 let clickThroughPref = false;
+let alertItems = [];
+let alertUnread = 0;
 const PROVIDERS = [
   { id: 'eastmoney', label: '东方财富', short: '东财' },
   { id: 'tencent', label: '腾讯财经', short: '腾讯' },
   { id: 'sina', label: '新浪财经', short: '新浪' }
 ];
-const DEFAULT_HINT = '左键看分时 · 右键调顺序 · 拖动窗口';
+const DEFAULT_HINT = '点星关注 · 左键分时 · 右键排序';
 
 function providerMeta(id) {
   return PROVIDERS.find((p) => p.id === id) || PROVIDERS[0];
@@ -114,7 +157,122 @@ function hideSrcMenu() {
   srcMenuEl.hidden = true;
 }
 
+function alertPanelOpen() {
+  return !!(alertPanelEl && !alertPanelEl.hidden);
+}
+
+function hideAlertPanel() {
+  if (!alertPanelEl) return;
+  alertPanelEl.hidden = true;
+  if (alertBtn) alertBtn.classList.remove('open');
+}
+
+function formatAlertPct(pct) {
+  const n = Number(pct);
+  if (!Number.isFinite(n)) return '--';
+  const sign = n > 0 ? '+' : '';
+  return `${sign}${n.toFixed(2)}%`;
+}
+
+function formatAlertSpan(ms) {
+  const s = Math.max(1, Math.round(Number(ms) / 1000));
+  if (s < 90) return `${s}秒`;
+  if (s >= 50 * 60) {
+    const h = Math.max(1, Math.round(s / 3600));
+    return `${h}小时`;
+  }
+  const m = Math.max(1, Math.round(s / 60));
+  return `${m}分钟`;
+}
+
+function formatAlertGear(item) {
+  const lev = Number(item && item.leverage);
+  if (!(lev >= 1) || lev === 1) return '';
+  const side = String(item && item.side || '').toLowerCase();
+  const sideText = side === 'sell' || side === 'short' ? '空'
+    : side === 'buy' || side === 'long' ? '多' : '';
+  return `${lev}x${sideText} `;
+}
+
+function formatAlertTime(t) {
+  const d = new Date(t);
+  if (!Number.isFinite(d.getTime())) return '';
+  const now = new Date();
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  if (d.toDateString() === now.toDateString()) return hm;
+  return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
+function renderAlertBadge() {
+  if (!alertBtn || !alertBadgeEl) return;
+  alertBtn.classList.toggle('has-unread', alertUnread > 0);
+  alertBtn.title = alertUnread > 0 ? `提醒（${alertUnread}条未读）` : '提醒';
+  if (alertUnread > 0) {
+    alertBadgeEl.hidden = false;
+    alertBadgeEl.textContent = alertUnread > 9 ? '9+' : String(alertUnread);
+  } else {
+    alertBadgeEl.hidden = true;
+  }
+}
+
+function renderAlertList() {
+  if (!alertListEl || !alertReadAllBtn) return;
+  alertReadAllBtn.disabled = alertUnread <= 0;
+  if (!alertItems.length) {
+    alertListEl.innerHTML = '<div class="alert-empty">暂无提醒</div>';
+    return;
+  }
+  alertListEl.innerHTML = alertItems.map((item) => {
+    const dir = item.dir === 'down' ? 'down' : 'up';
+    const action = item.grind
+      ? (dir === 'down' ? '持续下挫' : '持续拉升')
+      : (dir === 'down' ? '突然下挫' : '突然拉升');
+    const span = item.gap ? '跳空' : `约${formatAlertSpan(item.spanMs)}`;
+    const price = Number(item.price);
+    const priceText = Number.isFinite(price) && price > 0 ? `  ${price.toFixed(2)}` : '';
+    const name = [item.marketLabel, item.name || item.code].filter(Boolean).join(' · ');
+    const readCls = item.read ? ' read' : '';
+    return `<button type="button" class="alert-item${readCls}" data-id="${escapeHtml(item.id)}" data-market="${escapeHtml(item.market || 'cn')}">
+      <span class="alert-dot"></span>
+      <span class="alert-main">
+        <span class="alert-top">
+          <span class="alert-name">${escapeHtml(name)}</span>
+          <span class="alert-time">${escapeHtml(formatAlertTime(item.t))}</span>
+        </span>
+        <span class="alert-body"><span class="alert-move ${dir}">${action}</span>${escapeHtml(`${span} ${formatAlertGear(item)}${formatAlertPct(item.movePct)}${priceText}`)}</span>
+      </span>
+    </button>`;
+  }).join('');
+}
+
+function applyAlerts(data) {
+  alertItems = Array.isArray(data && data.items) ? data.items : [];
+  alertUnread = Number(data && data.unread) || 0;
+  renderAlertBadge();
+  if (alertPanelOpen()) renderAlertList();
+}
+
+function showAlertPanel() {
+  hideCtxMenu();
+  hideSrcMenu();
+  if (!alertPanelEl) return;
+  alertPanelEl.hidden = false;
+  if (alertBtn) alertBtn.classList.add('open');
+  renderAlertList();
+}
+
+function toggleAlertPanel() {
+  if (alertPanelOpen()) hideAlertPanel();
+  else showAlertPanel();
+}
+
 function applyProvider(id, label, short) {
+  if (id === 'crypto') {
+    currentProvider = 'crypto';
+    srcBtn.textContent = short || '币安';
+    srcBtn.title = `数据来源：${label || '币安 / Gate'}（加密固定）`;
+    return;
+  }
   const meta = providerMeta(id);
   currentProvider = meta.id;
   srcBtn.textContent = short || meta.short;
@@ -138,6 +296,7 @@ function applyHint(suggestSwitch) {
 
 function showSrcMenu() {
   hideCtxMenu();
+  hideAlertPanel();
   srcMenuEl.hidden = false;
   const rect = srcBtn.getBoundingClientRect();
   const pad = 8;
@@ -170,17 +329,19 @@ function applyTheme(theme) {
 }
 
 function applyMarket(market) {
-  const next = market === 'us' ? 'us' : 'cn';
+  const next = normalizeMarket(market);
   const switched = currentMarket !== next;
   currentMarket = next;
   document.documentElement.dataset.market = currentMarket;
   marketCnBtn.classList.toggle('active', currentMarket === 'cn');
   marketUsBtn.classList.toggle('active', currentMarket === 'us');
+  marketCryptoBtn.classList.toggle('active', currentMarket === 'crypto');
   indexSpec = specForMarket(currentMarket);
   indexNameEl.innerHTML = nameCellHtml(indexSpec.name, indexSpec.code);
   indexNameEl.dataset.tip = fullNameText(indexSpec.name, indexSpec.code);
   indexNameEl.classList.remove('has-tip');
-  chartMetaEl.textContent = currentMarket === 'us' ? '21:30-04:00' : '9:30-15:00';
+  chartMetaEl.textContent =
+    currentMarket === 'crypto' ? '24h' : currentMarket === 'us' ? '21:30-04:00' : '9:30-15:00';
   indexRowEl.dataset.secid = indexSecId();
   if (switched) {
     selectedSecId = indexSecId();
@@ -196,15 +357,45 @@ themeBtn.addEventListener('mousedown', (e) => {
 
 srcBtn.addEventListener('mousedown', (e) => e.stopPropagation());
 srcMenuEl.addEventListener('mousedown', (e) => e.stopPropagation());
+if (alertBtn) alertBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+if (alertPanelEl) alertPanelEl.addEventListener('mousedown', (e) => e.stopPropagation());
 hintEl.addEventListener('mousedown', (e) => {
   if (hintEl.classList.contains('switch-hint')) e.stopPropagation();
 });
 
 srcBtn.addEventListener('click', (e) => {
   e.stopPropagation();
+  hideAlertPanel();
+  if (currentMarket === 'crypto') return;
   if (srcMenuEl.hidden) showSrcMenu();
   else hideSrcMenu();
 });
+
+if (alertBtn) {
+  alertBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleAlertPanel();
+  });
+}
+
+if (alertReadAllBtn) {
+  alertReadAllBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (alertUnread <= 0) return;
+    window.stockApi.markAllAlertsRead().then(applyAlerts).catch(() => {});
+  });
+}
+
+if (alertListEl) {
+  alertListEl.addEventListener('click', (e) => {
+    const itemEl = e.target.closest && e.target.closest('.alert-item');
+    if (!itemEl) return;
+    e.stopPropagation();
+    const id = itemEl.dataset.id;
+    if (!id || itemEl.classList.contains('read')) return;
+    window.stockApi.markAlertRead(id).then(applyAlerts).catch(() => {});
+  });
+}
 
 srcMenuEl.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-provider]');
@@ -227,6 +418,7 @@ themeBtn.addEventListener('click', (e) => {
 });
 
 function onMarketClick(market) {
+  hideAlertPanel();
   if (currentMarket === market) return;
   applyMarket(market);
   render();
@@ -237,6 +429,7 @@ function onMarketClick(market) {
 
 marketCnBtn.addEventListener('mousedown', (e) => e.stopPropagation());
 marketUsBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+marketCryptoBtn.addEventListener('mousedown', (e) => e.stopPropagation());
 marketCnBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   onMarketClick('cn');
@@ -244,6 +437,10 @@ marketCnBtn.addEventListener('click', (e) => {
 marketUsBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   onMarketClick('us');
+});
+marketCryptoBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  onMarketClick('crypto');
 });
 
 function escapeHtml(s) {
@@ -258,6 +455,34 @@ function nameCellHtml(name, code) {
   const n = escapeHtml(name || '--');
   const c = escapeHtml(code || '');
   return `<span class="name-text">${n}</span><span class="name-code">${c}</span>`;
+}
+
+function watchStarHtml(watched) {
+  const on = watched ? ' on' : '';
+  const title = watched ? '取消关注' : '关注';
+  return `<button type="button" class="watch-star${on}" title="${title}" aria-label="${title}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.6l2.72 5.51 6.08.88-4.4 4.29 1.04 6.06L12 16.47 6.56 19.34l1.04-6.06-4.4-4.29 6.08-.88L12 2.6z"></path></svg></button>`;
+}
+
+function isBigMove(q) {
+  return !!(q && q.watch && q.sudden);
+}
+
+function flashAlertRows(alerts) {
+  if (!Array.isArray(alerts) || !alerts.length) return;
+  alerts.forEach((item) => {
+    if (item && item.secId) {
+      flashSecIds.add(item.secId);
+      return;
+    }
+    const q = quotes.find((row) => item && rowCode(row) === rowCode(item));
+    if (q) flashSecIds.add(rowSecId(q));
+  });
+  render();
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    flashSecIds.clear();
+    render();
+  }, 2800);
 }
 
 function fullNameText(name, code) {
@@ -335,19 +560,45 @@ function scheduleTruncationTips() {
   requestAnimationFrame(applyTruncationTips);
 }
 
+function positionPnlPct(q) {
+  const cost = Number(q && q.cost);
+  const price = Number(q && q.price);
+  if (!(cost > 0) || !(price > 0)) return null;
+  const move = (price - cost) / cost;
+  if (q.kind === 'perp') {
+    const dir = q.side === 'sell' ? -1 : 1;
+    const lev = Number(q.leverage);
+    const mult = Number.isFinite(lev) && lev >= 1 ? lev : 1;
+    return move * dir * mult * 100;
+  }
+  return move * 100;
+}
+
+function formatPnlText(pnl) {
+  if (!Number.isFinite(pnl)) return '';
+  const sign = pnl > 0 ? '+' : '';
+  return `${sign}${pnl.toFixed(2)}%`;
+}
+
 function priceHoverText(q) {
   const parts = [];
   const price = Number(q && q.price);
   if (Number.isFinite(price) && price > 0) parts.push(`现价 ${price.toFixed(2)}`);
   const cost = Number(q && q.cost);
   if (Number.isFinite(cost) && cost > 0) {
-    let s = `成本 ${cost.toFixed(2)}`;
-    if (Number.isFinite(price) && price > 0) {
-      const pnl = ((price - cost) / cost) * 100;
-      const sign = pnl > 0 ? '+' : '';
-      s += `(${sign}${pnl.toFixed(2)}%)`;
+    const pnl = positionPnlPct(q);
+    if (q.kind === 'perp') {
+      const lev = Number(q.leverage);
+      const levText = Number.isFinite(lev) && lev >= 1 ? `${lev}x` : '1x';
+      const sideText = q.side === 'sell' ? '空' : '多';
+      let s = `开仓 ${cost.toFixed(2)} ${levText}${sideText}`;
+      if (Number.isFinite(pnl)) s += `(${formatPnlText(pnl)})`;
+      parts.push(s);
+    } else {
+      let s = `成本 ${cost.toFixed(2)}`;
+      if (Number.isFinite(pnl)) s += `(${formatPnlText(pnl)})`;
+      parts.push(s);
     }
-    parts.push(s);
   }
   return parts.join('  ');
 }
@@ -364,13 +615,17 @@ function formatQuote(q) {
 function costCellHtml(q) {
   const cost = Number(q && q.cost);
   if (!Number.isFinite(cost) || cost <= 0) return '';
-  const price = Number(q && q.price);
+  const pnl = positionPnlPct(q);
   let pnlHtml = '';
-  if (Number.isFinite(price) && price > 0) {
-    const pnl = ((price - cost) / cost) * 100;
-    const cls = !Number.isFinite(pnl) || Math.abs(pnl) < 0.005 ? 'flat' : pnl > 0 ? 'up' : 'down';
-    const sign = pnl > 0 ? '+' : '';
-    pnlHtml = `<span class="cost-pnl ${cls}">(${sign}${pnl.toFixed(2)}%)</span>`;
+  if (Number.isFinite(pnl)) {
+    const cls = Math.abs(pnl) < 0.005 ? 'flat' : pnl > 0 ? 'up' : 'down';
+    pnlHtml = `<span class="cost-pnl ${cls}">(${formatPnlText(pnl)})</span>`;
+  }
+  if (q.kind === 'perp') {
+    const lev = Number(q.leverage);
+    const levText = Number.isFinite(lev) && lev >= 1 ? `${lev}x` : '1x';
+    const sideText = q.side === 'sell' ? '空' : '多';
+    return `<span class="price-cost">${levText}${sideText} ${cost.toFixed(2)}${pnlHtml}</span>`;
   }
   return `<span class="price-cost">成本 ${cost.toFixed(2)}${pnlHtml}</span>`;
 }
@@ -409,15 +664,20 @@ function render() {
   quotes.forEach((q) => {
     const row = document.createElement('div');
     const secId = rowSecId(q);
-    row.className = 'row' + (secId === selectedSecId ? ' active' : '');
+    const watched = !!q.watch;
+    row.className = 'row'
+      + (secId === selectedSecId ? ' active' : '')
+      + (watched ? ' watched' : '')
+      + (isBigMove(q) ? ' big-move' : '')
+      + (flashSecIds.has(secId) ? ' alert-flash' : '');
     row.dataset.secid = secId;
     row.dataset.code = rowCode(q);
     const { cls, price, pctText } = formatQuote(q);
     const costHtml = costCellHtml(q);
-    const full = fullNameText(q.name, q.code);
+    const full = fullNameText(q.name, rowCodeLabel(q));
     const priceTip = priceHoverText(q);
     row.innerHTML = `
-      <div class="name" data-tip="${escapeHtml(full)}">${nameCellHtml(q.name, q.code)}</div>
+      <div class="name" data-tip="${escapeHtml(full)}">${nameCellHtml(q.name, rowCodeLabel(q))}${watchStarHtml(watched)}</div>
       <div class="price${costHtml ? ' has-cost' : ''}"${priceTip ? ` data-tip="${escapeHtml(priceTip)}"` : ''}><span class="price-now">${price}</span>${costHtml}</div>
       <div class="pct ${cls}">${pctText}</div>
     `;
@@ -456,12 +716,31 @@ function timeToX(time) {
   return 0.5 + Math.max(0, Math.min(1, (t - pm) / 120)) * 0.5;
 }
 
+function cryptoKindLabel(secId, q) {
+  if (q && q.kindLabel) return q.kindLabel;
+  if (q && q.kind === 'perp') return '永续';
+  const s = String(secId || q?.code || '');
+  if (s.endsWith('.perp') || s.endsWith('-PERP') || s.endsWith('PERP')) return '永续';
+  return '现货';
+}
+
 function nameForSecId(secId) {
   if (!secId) return indexSpec.name;
-  if (secId === indexSpec.secId || secId === indexSpec.code) return indexSpec.name;
   const q = quotes.find((item) => rowSecId(item) === secId);
-  if (q) return q.name || q.code;
-  if (trends && (trends.secId === secId || trends.code === indexSpec.code)) {
+  if (q) {
+    if (currentMarket === 'crypto') return `${q.name || q.code} ${cryptoKindLabel(secId, q)}`.trim();
+    return q.name || q.code;
+  }
+  if (secId === indexSpec.secId) {
+    if (currentMarket === 'crypto') {
+      return `${indexSpec.name || '比特币'} ${cryptoKindLabel(secId)}`.trim();
+    }
+    return indexSpec.name;
+  }
+  if (trends && trends.secId === secId) {
+    if (currentMarket === 'crypto') {
+      return `${trends.name || indexSpec.name} ${cryptoKindLabel(secId, trends)}`.trim();
+    }
     return trends.name || indexSpec.name;
   }
   return indexSpec.name;
@@ -528,7 +807,15 @@ function drawChart() {
   const plotW = right - left;
   const plotH = bottom - top;
 
-  const xAt = (time) => left + timeToX(time) * plotW;
+  const xAtPoint = (p) => {
+    if (currentMarket === 'crypto' && Number.isFinite(p.t) && points.length) {
+      const t0 = points[0].t;
+      const t1 = points[points.length - 1].t;
+      const span = Math.max(t1 - t0, 1);
+      return left + ((p.t - t0) / span) * plotW;
+    }
+    return left + timeToX(p.time) * plotW;
+  };
   const yAt = (price) => top + ((max - price) / (max - min)) * plotH;
 
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
@@ -550,30 +837,30 @@ function drawChart() {
 
   const last = points[points.length - 1].price;
   const up = last >= preClose;
-  const stroke = currentMarket === 'us'
+  const stroke = isGreenUpMarket()
     ? (up ? '#3ddc84' : '#ff6b6e')
     : (up ? '#ff6b6e' : '#3ddc84');
-  const fill = currentMarket === 'us'
+  const fill = isGreenUpMarket()
     ? (up ? 'rgba(61, 220, 132, 0.18)' : 'rgba(255, 107, 110, 0.22)')
     : (up ? 'rgba(255, 107, 110, 0.22)' : 'rgba(61, 220, 132, 0.18)');
 
   ctx.beginPath();
   points.forEach((p, i) => {
-    const x = xAt(p.time);
+    const x = xAtPoint(p);
     const y = yAt(p.price);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
-  const lastX = xAt(points[points.length - 1].time);
+  const lastX = xAtPoint(points[points.length - 1]);
   ctx.lineTo(lastX, preY);
-  ctx.lineTo(xAt(points[0].time), preY);
+  ctx.lineTo(xAtPoint(points[0]), preY);
   ctx.closePath();
   ctx.fillStyle = fill;
   ctx.fill();
 
   ctx.beginPath();
   points.forEach((p, i) => {
-    const x = xAt(p.time);
+    const x = xAtPoint(p);
     const y = yAt(p.price);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
@@ -586,7 +873,7 @@ function drawChart() {
   if (avgPoints.length > 1) {
     ctx.beginPath();
     avgPoints.forEach((p, i) => {
-      const x = xAt(p.time);
+      const x = xAtPoint(p);
       const y = yAt(p.avg);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
@@ -599,12 +886,23 @@ function drawChart() {
   ctx.fillStyle = 'rgba(234, 238, 245, 0.45)';
   ctx.font = '10px Microsoft YaHei';
   ctx.textAlign = 'left';
-  ctx.fillText(currentMarket === 'us' ? '21:30' : '9:30', left, height - 2);
+  const startLabel = currentMarket === 'crypto'
+    ? (points[0].time || '24h')
+    : currentMarket === 'us' ? '21:30' : '9:30';
+  const midLabel = currentMarket === 'crypto'
+    ? (points[Math.floor(points.length / 2)].time || '')
+    : currentMarket === 'us' ? '01:00' : '11:30/13:00';
+  const endLabel = currentMarket === 'crypto'
+    ? (points[points.length - 1].time || '')
+    : currentMarket === 'us' ? '04:00' : '15:00';
+  ctx.fillText(startLabel, left, height - 2);
   ctx.textAlign = 'center';
-  ctx.fillText(currentMarket === 'us' ? '01:00' : '11:30/13:00', left + plotW * 0.5, height - 2);
+  ctx.fillText(midLabel, left + plotW * 0.5, height - 2);
   ctx.textAlign = 'right';
-  ctx.fillText(currentMarket === 'us' ? '04:00' : '15:00', right, height - 2);
+  ctx.fillText(endLabel, right, height - 2);
 }
+
+window.stockApi.onAlertsChanged((data) => applyAlerts(data));
 
 window.stockApi.onQuotesUpdate((data) => {
   if (data.market) applyMarket(data.market);
@@ -613,7 +911,9 @@ window.stockApi.onQuotesUpdate((data) => {
   applyHint(!!data.suggestSwitch);
   quotes = data.quotes || [];
   if (data.selectedSecId) selectedSecId = data.selectedSecId;
-  trends = data.trends || trends;
+  if (data.trends && (!data.trends.secId || data.trends.secId === selectedSecId)) {
+    trends = data.trends;
+  }
   if (Number.isFinite(data.focusIndex)) {
     const i = data.focusIndex;
     if (i < scrollIndex) scrollIndex = i;
@@ -622,6 +922,7 @@ window.stockApi.onQuotesUpdate((data) => {
   render();
   renderIndex(data.index);
   drawChart();
+  flashAlertRows(data.alerts);
 });
 
 function resetPointerState() {
@@ -631,6 +932,7 @@ function resetPointerState() {
   pendingSecId = null;
   hideCtxMenu();
   hideSrcMenu();
+  hideAlertPanel();
   panelEl.style.cursor = 'grab';
   window.stockApi.setPointerOver(false);
 }
@@ -656,6 +958,11 @@ window.stockApi.onWidgetReset(() => {
 });
 
 window.addEventListener('wheel', (e) => {
+  if (alertPanelOpen()) {
+    if (alertListEl && alertListEl.contains(e.target)) return;
+    e.preventDefault();
+    return;
+  }
   e.preventDefault();
   const maxScroll = Math.max(0, listItemCount() - VISIBLE);
   if (maxScroll === 0) return;
@@ -674,6 +981,7 @@ function hideCtxMenu() {
 
 async function showCtxMenu(e, code) {
   hideHoverTip();
+  hideAlertPanel();
   const info = await window.stockApi.getStockOrder(code);
   if (!info || info.index < 0) return;
   ctxCode = code;
@@ -698,6 +1006,26 @@ ctxMenuEl.addEventListener('click', (e) => {
   window.stockApi.reorderStock(ctxCode, btn.dataset.action);
   hideCtxMenu();
 });
+
+listEl.addEventListener('mousedown', (e) => {
+  if (!(e.target.closest && e.target.closest('.watch-star'))) return;
+  e.stopPropagation();
+}, true);
+
+listEl.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('.watch-star');
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const row = btn.closest('.row[data-code]');
+  const code = row && row.dataset.code;
+  if (!code) return;
+  window.stockApi.toggleWatch(code).then((res) => {
+    const q = quotes.find((item) => rowCode(item) === code);
+    if (q) q.watch = !!(res && res.watch);
+    render();
+  }).catch(() => {});
+}, true);
 
 panelEl.addEventListener('contextmenu', (e) => {
   const row = e.target.closest ? e.target.closest('#list .row[data-code]') : null;
@@ -736,6 +1064,10 @@ srcMenuEl.addEventListener('mouseleave', (e) => {
 window.addEventListener('mousedown', (e) => {
   if (!ctxMenuEl.hidden && !ctxMenuEl.contains(e.target)) hideCtxMenu();
   if (!srcMenuEl.hidden && !srcMenuEl.contains(e.target) && e.target !== srcBtn) hideSrcMenu();
+  if (alertPanelOpen() && alertPanelEl && !alertPanelEl.contains(e.target)
+    && alertBtn && !alertBtn.contains(e.target)) {
+    hideAlertPanel();
+  }
 }, true);
 
 panelEl.addEventListener('mouseenter', () => {
@@ -771,7 +1103,7 @@ window.addEventListener('mouseout', (e) => {
 panelEl.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   hideHoverTip();
-  if (e.target.closest && (e.target.closest('#theme-btn') || e.target.closest('#market-switch') || e.target.closest('#src-btn') || e.target.closest('#src-menu'))) return;
+  if (e.target.closest && (e.target.closest('#theme-btn') || e.target.closest('#market-switch') || e.target.closest('#src-btn') || e.target.closest('#src-menu') || e.target.closest('#alert-btn') || e.target.closest('#alert-panel') || e.target.closest('.watch-star'))) return;
   dragging = true;
   dragMoved = false;
   pendingSecId = findSecId(e.target);
@@ -818,3 +1150,4 @@ window.stockApi.getConfig().then((cfg) => {
   applyMarket(cfg && cfg.market);
   applyProvider(cfg && cfg.quoteProvider);
 });
+window.stockApi.getAlerts().then(applyAlerts).catch(() => {});

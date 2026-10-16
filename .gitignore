@@ -1,6 +1,7 @@
 node_modules/
 position.json
 stocks.json
+alerts.json
 .idea/
 *.lnk
 Thumbs.db

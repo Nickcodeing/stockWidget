@@ -5,6 +5,7 @@
   "theme": "sun",
   "market": "cn",
   "quoteProvider": "eastmoney",
+  "alertSensitivity": 1,
   "cnIndex": {
     "secId": "1.000001",
     "name": "上证指数"
@@ -13,8 +14,12 @@
     "secId": "100.NDX100",
     "name": "纳斯达克100"
   },
+  "cryptoIndex": {
+    "secId": "crypto.BTC.spot",
+    "name": "比特币"
+  },
   "stocks": [
-    { "code": "600519", "cost": 1680 },
+    { "code": "600519", "cost": 1680, "watch": true },
     { "code": "000001", "cost": 0 },
     { "code": "300750", "cost": 0 },
     { "code": "601318", "cost": 0 },
@@ -28,5 +33,11 @@
     { "code": "MSFT", "cost": 0 },
     { "code": "GOOGL", "cost": 0 },
     { "code": "AMZN", "cost": 0 }
+  ],
+  "cryptoStocks": [
+    { "code": "BTC", "cost": 0 },
+    { "code": "BTC-PERP", "cost": 80000, "leverage": 10, "side": "buy" },
+    { "code": "ETH", "cost": 0 },
+    { "code": "ETH-PERP", "cost": 0, "leverage": 5, "side": "sell" }
   ]
 }

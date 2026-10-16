@@ -13,11 +13,20 @@
           <button type="button" id="market-cn" class="market-btn active">A股</button>
           <span class="market-sep">/</span>
           <button type="button" id="market-us" class="market-btn">美股</button>
+          <span class="market-sep">/</span>
+          <button type="button" id="market-crypto" class="market-btn">加密</button>
         </span>
         <span id="clock">--:--:--</span>
       </span>
       <span id="header-right">
         <button type="button" id="src-btn" title="数据来源">东财</button>
+        <button type="button" id="alert-btn" title="提醒" aria-label="提醒">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6.2 9.2a5.8 5.8 0 1 1 11.6 0c0 4.4 1.5 6.4 2.2 7.2H4c.7-.8 2.2-2.8 2.2-7.2z"></path>
+            <path d="M10 19.2a2 2 0 0 0 4 0"></path>
+          </svg>
+          <span id="alert-badge" hidden>0</span>
+        </button>
         <button type="button" id="theme-btn">
           <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="4"></circle>
@@ -30,9 +39,16 @@
         <span id="status">可交互</span>
       </span>
     </div>
-    <div id="hint">左键看分时 · 右键调顺序 · 拖动窗口</div>
+    <div id="hint">点星关注 · 左键分时 · 右键排序</div>
     <div id="viewport">
       <div id="list"></div>
+    </div>
+    <div id="alert-panel" hidden>
+      <div id="alert-head">
+        <span>提醒</span>
+        <button type="button" id="alert-read-all">全部已读</button>
+      </div>
+      <div id="alert-list"></div>
     </div>
     <div id="index">
       <div class="row active" id="index-row" data-secid="1.000001">

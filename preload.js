@@ -8,12 +8,19 @@ contextBridge.exposeInMainWorld('stockApi', {
   selectTrend: (secId) => ipcRenderer.send('select-trend', secId),
   getStockOrder: (code) => ipcRenderer.invoke('stock-order-info', code),
   reorderStock: (code, action) => ipcRenderer.send('reorder-stock', { code, action }),
+  toggleWatch: (code) => ipcRenderer.invoke('toggle-watch', code),
+  getAlerts: () => ipcRenderer.invoke('get-alerts'),
+  markAlertRead: (id) => ipcRenderer.invoke('mark-alert-read', id),
+  markAllAlertsRead: () => ipcRenderer.invoke('mark-all-alerts-read'),
   setTheme: (theme) => ipcRenderer.invoke('set-theme', theme),
   setMarket: (market) => ipcRenderer.invoke('set-market', market),
   setQuoteProvider: (id) => ipcRenderer.invoke('set-quote-provider', id),
   moveWindow: (dx, dy) => ipcRenderer.send('move-window', dx, dy),
   onQuotesUpdate: (cb) => {
     ipcRenderer.on('quotes-update', (_, data) => cb(data));
+  },
+  onAlertsChanged: (cb) => {
+    ipcRenderer.on('alerts-changed', (_, data) => cb(data));
   },
   onClickThroughChanged: (cb) => {
     ipcRenderer.on('click-through-changed', (_, enabled, pref) => cb(enabled, pref));
