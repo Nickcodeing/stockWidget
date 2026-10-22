@@ -339,6 +339,15 @@ function applyScaleLabel(raw, opts) {
   if ((opts && opts.reveal) || changed) revealScaleTemporarily();
 }
 
+function hasVisibleQuotes(data) {
+  const price = Number(data && data.index && data.index.price);
+  if (Number.isFinite(price) && price > 0) return true;
+  return (
+    Array.isArray(data && data.quotes) &&
+    data.quotes.some((q) => Number.isFinite(Number(q.price)) && Number(q.price) > 0)
+  );
+}
+
 function applyHint(suggestSwitch) {
   if (suggestSwitch) {
     hintEl.textContent = '暂无行情，点击切换数据来源';
@@ -965,7 +974,7 @@ window.stockApi.onQuotesUpdate((data) => {
   if (data.market) applyMarket(data.market);
   if (data.indexSpec) indexSpec = data.indexSpec;
   if (data.quoteProvider) applyProvider(data.quoteProvider, data.quoteProviderLabel, data.quoteProviderShort);
-  applyHint(!!data.suggestSwitch);
+  applyHint(!!data.suggestSwitch && !hasVisibleQuotes(data));
   quotes = data.quotes || [];
   if (data.selectedSecId) selectedSecId = data.selectedSecId;
   if (data.trends && (!data.trends.secId || data.trends.secId === selectedSecId)) {

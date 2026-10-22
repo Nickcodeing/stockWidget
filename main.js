@@ -24,7 +24,10 @@ const {
 } = require('./lib/quotes');
 const cryptoQuotes = require('./lib/quotes/crypto');
 const { parseCryptoInstrument } = require('./lib/symbols');
+const { firstSettledStaggered } = require('./lib/http');
 const FAIL_SWITCH_HINT = 3;
+const STALE_SWITCH_HINT = 8;
+let refreshEpoch = 0;
 
 let win;
 let tray;
@@ -608,7 +611,7 @@ function currentProvider() {
   return providerMeta(config && config.quoteProvider);
 }
 
-function fetchQuotesForMarket(market, codes) {
+function fetchQuotesForMarket(market, codes, providerId) {
   const m = normalizeMarket(market);
   const args = {
     market: m,
@@ -616,16 +619,49 @@ function fetchQuotesForMarket(market, codes) {
     indexSpec: indexSpecFor(m)
   };
   if (m === 'crypto') return cryptoQuotes.fetchQuotes(args);
-  return getQuoteProvider(currentProvider().id).fetchQuotes(args);
+  return getQuoteProvider(providerId || currentProvider().id).fetchQuotes(args);
 }
 
 function fetchQuotes() {
   return fetchQuotesForMarket(currentMarket(), currentStockCodes());
 }
 
-function fetchTrends(secId) {
+function stockProviderOrder() {
+  const current = currentProvider().id;
+  return [current, ...QUOTE_PROVIDERS.map((p) => p.id).filter((id) => id !== current)];
+}
+
+function fetchQuotesResilient(market, codes) {
+  const m = normalizeMarket(market || currentMarket());
+  const list = Array.isArray(codes) ? codes : currentStockCodes();
+  if (m === 'crypto') {
+    return fetchQuotesForMarket(m, list).then((quoteData) => ({ quoteData, providerId: 'crypto' }));
+  }
+  return firstSettledStaggered(
+    stockProviderOrder().map((id) => () =>
+      fetchQuotesForMarket(m, list, id).then((quoteData) => {
+        if (!hasQuoteData(quoteData)) throw new Error(`${id} empty`);
+        return { quoteData, providerId: id };
+      })
+    ),
+    450
+  );
+}
+
+function fetchTrends(secId, providerId) {
   if (currentMarket() === 'crypto') return cryptoQuotes.fetchTrends(secId);
-  return getQuoteProvider(currentProvider().id).fetchTrends(secId);
+  return getQuoteProvider(providerId || currentProvider().id).fetchTrends(secId);
+}
+
+function adoptQuoteProvider(id) {
+  if (!id || id === 'crypto') return;
+  const next = normalizeProviderId(id);
+  if (!config || config.quoteProvider === next) return;
+  console.error(`[stock-widget] quote source switched to ${next}`);
+  config.quoteProvider = next;
+  saveConfig();
+  failCount = 0;
+  updateTray();
 }
 
 function hasQuoteData(data) {
@@ -672,6 +708,7 @@ function sendQuotes(payload) {
   }
   lastPayload = { ...payload };
   delete lastPayload.alerts;
+  delete lastPayload.focusIndex;
   if (!win || win.isDestroyed()) return;
   win.webContents.send('quotes-update', payload);
 }
@@ -1125,7 +1162,7 @@ function maybeAlert(quotes, market) {
     const found = detectSuddenMove(ticks, profile, gear.lev)
       || detectGrindMove(ticks, profile, gear.lev);
     if (!found) return;
-    const movePct = found.movePct * gear.sign;
+    const movePct = found.movePct;
     const dir = movePct < 0 ? 'down' : 'up';
     if (!canFireAlert(key, dir, price, found.needPct, gear.lev, found.grind)) return;
     alertLatch.set(key, {
@@ -1187,10 +1224,37 @@ function toggleWatch(code) {
       selectedSecId,
       market: currentMarket(),
       indexSpec: currentIndex(),
-      ...quoteMeta(failCount >= FAIL_SWITCH_HINT)
+      ...suggestSwitchMeta(hasQuoteData(lastPayload))
     });
   }
   return { watch: next };
+}
+
+function pickTrendChart(trends) {
+  const chart =
+    trends && trends.secId === selectedSecId
+      ? trends
+      : lastTrends && lastTrends.secId === selectedSecId
+        ? lastTrends
+        : null;
+  if (chart) lastTrends = chart;
+  return chart;
+}
+
+function sendLiveQuotes(quoteData, chart) {
+  const quotes = attachPositions(quoteData.quotes, currentMarket());
+  const alerts = maybeAlert(quotes, currentMarket());
+  sendQuotes({
+    quotes: decorateSudden(quotes),
+    index: quoteData.index,
+    trends: chart,
+    selectedSecId,
+    market: currentMarket(),
+    indexSpec: currentIndex(),
+    opacity: config.opacity ?? 0.88,
+    alerts,
+    ...suggestSwitchMeta(false)
+  });
 }
 
 function refreshQuotes() {
@@ -1201,55 +1265,58 @@ function refreshQuotes() {
   } catch (err) {
     fetching = false;
     console.error('[stock-widget] config error:', err);
-    return;
+    return Promise.resolve();
   }
-  fetchQuotes()
-    .catch((err) => {
-      console.error('[stock-widget] fetch retry:', err.message || err);
-      return fetchQuotes();
-    })
-    .then((quoteData) => {
-      const trendSecId = selectedSecId;
-      return fetchTrends(trendSecId)
-        .then((trends) => ({ quoteData, trends, trendSecId }))
+  const trendSecId = selectedSecId;
+  return fetchQuotesResilient(currentMarket(), currentStockCodes())
+    .then(({ quoteData, providerId }) => {
+      if (gen !== quoteGen) return null;
+      adoptQuoteProvider(providerId);
+      return fetchTrends(trendSecId, providerId)
+        .then((trends) => ({ quoteData, trends }))
         .catch((err) => {
           console.error('[stock-widget] trends error:', err.message || err);
-          return { quoteData, trends: lastTrends, trendSecId };
+          return {
+            quoteData,
+            trends: lastTrends && lastTrends.secId === trendSecId ? lastTrends : null
+          };
         });
     })
-    .then(({ quoteData, trends, trendSecId }) => {
-      if (gen !== quoteGen) return;
-      if (hasQuoteData(quoteData)) failCount = 0;
-      else failCount += 1;
-      const chart =
-        trends && trends.secId === selectedSecId
-          ? trends
-          : lastTrends && lastTrends.secId === selectedSecId
-            ? lastTrends
-            : null;
-      if (chart) lastTrends = chart;
-      const quotes = attachPositions(quoteData.quotes, currentMarket());
-      const alerts = maybeAlert(quotes, currentMarket());
-      sendQuotes({
-        quotes: decorateSudden(quotes),
-        index: quoteData.index,
-        trends: chart,
-        selectedSecId,
-        market: currentMarket(),
-        indexSpec: currentIndex(),
-        opacity: config.opacity ?? 0.88,
-        alerts,
-        ...quoteMeta(failCount >= FAIL_SWITCH_HINT)
-      });
+    .then((pack) => {
+      if (!pack || gen !== quoteGen) return;
+      const { quoteData, trends } = pack;
+      const chart = pickTrendChart(trends);
+      if (hasQuoteData(quoteData)) {
+        failCount = 0;
+        sendLiveQuotes(quoteData, chart);
+        return;
+      }
+      failCount += 1;
+      if (lastPayload && hasQuoteData(lastPayload)) {
+        sendQuotes({
+          ...lastPayload,
+          trends: chart || lastPayload.trends,
+          selectedSecId,
+          market: currentMarket(),
+          indexSpec: currentIndex(),
+          ...suggestSwitchMeta(true)
+        });
+        return;
+      }
+      sendLiveQuotes(quoteData, chart);
     })
     .catch((err) => {
+      if (gen !== quoteGen) return;
       console.error('[stock-widget] fetch error:', err);
       failCount += 1;
-      const suggestSwitch = failCount >= FAIL_SWITCH_HINT;
-      if (lastPayload) {
-        lastPayload = { ...lastPayload, ...quoteMeta(suggestSwitch) };
+      const hasLastGood = !!(lastPayload && hasQuoteData(lastPayload));
+      const meta = suggestSwitchMeta(hasLastGood);
+      if (hasLastGood) {
+        lastPayload = { ...lastPayload, ...meta };
         pushQuotesToRenderer();
-      } else if (suggestSwitch && win && !win.isDestroyed()) {
+        return;
+      }
+      if (meta.suggestSwitch && win && !win.isDestroyed()) {
         win.webContents.send('quotes-update', {
           quotes: [],
           index: emptyIndexPayload(),
@@ -1258,11 +1325,8 @@ function refreshQuotes() {
           market: currentMarket(),
           indexSpec: currentIndex(),
           opacity: config.opacity ?? 0.88,
-          ...quoteMeta(true)
+          ...meta
         });
-      }
-      if (!lastPayload) {
-        setTimeout(() => refreshQuotes(), 3000);
       }
     })
     .finally(() => {
@@ -1370,8 +1434,13 @@ function pruneMarketWatchState(market) {
   });
 }
 
+function suggestSwitchMeta(hasLastGood) {
+  const need = hasLastGood ? STALE_SWITCH_HINT : FAIL_SWITCH_HINT;
+  return quoteMeta(failCount >= need);
+}
+
 function pollWatchedMarkets() {
-  if (watchFetching) return Promise.resolve();
+  if (watchFetching || fetching) return Promise.resolve();
   try {
     loadConfig();
   } catch (err) {
@@ -1389,8 +1458,8 @@ function pollWatchedMarkets() {
     if (m === current) return;
     if (!isMarketOpen(m)) return;
     jobs.push(
-      fetchQuotesForMarket(m, items.map((item) => item.code))
-        .then((data) => maybeAlert(attachPositions(data.quotes || [], m), m))
+      fetchQuotesResilient(m, items.map((item) => item.code))
+        .then(({ quoteData }) => maybeAlert(attachPositions(quoteData.quotes || [], m), m))
         .catch((err) => {
           console.error(`[stock-widget] watch ${m} error:`, err.message || err);
           return [];
@@ -1422,6 +1491,7 @@ function startWatchPoll() {
 }
 
 function stopRefresh() {
+  refreshEpoch += 1;
   if (!refreshTimer) return;
   clearTimeout(refreshTimer);
   clearInterval(refreshTimer);
@@ -1429,21 +1499,29 @@ function stopRefresh() {
 }
 
 function refreshLoop() {
+  const epoch = refreshEpoch;
   const open = isCurrentMarketOpen();
+  const schedule = (ms) => {
+    if (epoch !== refreshEpoch) return;
+    refreshTimer = setTimeout(refreshLoop, ms);
+  };
   if (open || !lastPayload) {
-    refreshQuotes();
+    const interval = open ? config.refreshIntervalMs || 5000 : 3000;
+    const t0 = Date.now();
     marketWasOpen = open;
-    refreshTimer = setTimeout(
-      refreshLoop,
-      open ? config.refreshIntervalMs || 5000 : 3000
-    );
+    Promise.resolve()
+      .then(() => refreshQuotes())
+      .finally(() => {
+        const wait = Math.max(400, interval - (Date.now() - t0));
+        schedule(wait);
+      });
     return;
   }
   if (marketWasOpen) {
     refreshQuotes();
     marketWasOpen = false;
   }
-  refreshTimer = setTimeout(refreshLoop, CLOSED_WAKE_MS);
+  schedule(CLOSED_WAKE_MS);
 }
 
 function startRefresh() {
@@ -1882,7 +1960,7 @@ ipcMain.on('select-trend', (_, secId) => {
         selectedSecId: want,
         market: currentMarket(),
         indexSpec: currentIndex(),
-        ...quoteMeta(failCount >= FAIL_SWITCH_HINT)
+        ...suggestSwitchMeta(!!(lastPayload && hasQuoteData(lastPayload)))
       });
     })
     .catch((err) => console.error('[stock-widget] trends error:', err));
