@@ -109,6 +109,39 @@ function pad2(n) {
   return String(n).padStart(2, '0');
 }
 
+function nyToBeijingHours(date) {
+  const d = date || new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(d);
+  const get = (type) => Number((parts.find((p) => p.type === type) || {}).value);
+  const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+  return 8 - (asUtc - d.getTime()) / 3600000;
+}
+
+function shiftClock(hh, mm, addHours) {
+  const add = Math.round(Number(addHours) * 60);
+  let total = (((hh * 60 + mm + add) % (24 * 60)) + 24 * 60) % (24 * 60);
+  return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`;
+}
+
+function usSessionBeijing() {
+  const add = nyToBeijingHours(new Date());
+  return {
+    label: `${shiftClock(9, 30, add)}-${shiftClock(16, 0, add)}`,
+    start: shiftClock(9, 30, add),
+    mid: shiftClock(13, 0, add),
+    end: shiftClock(16, 0, add)
+  };
+}
+
 function tickClock() {
   const d = new Date();
   clockEl.textContent = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
@@ -407,7 +440,7 @@ function applyMarket(market) {
   indexNameEl.dataset.tip = fullNameText(indexSpec.name, indexSpec.code);
   indexNameEl.classList.remove('has-tip');
   chartMetaEl.textContent =
-    currentMarket === 'crypto' ? '24h' : currentMarket === 'us' ? '21:30-04:00' : '9:30-15:00';
+    currentMarket === 'crypto' ? '24h' : currentMarket === 'us' ? usSessionBeijing().label : '9:30-15:00';
   indexRowEl.dataset.secid = indexSecId();
   if (switched) {
     selectedSecId = indexSecId();
@@ -763,14 +796,19 @@ function render() {
   scheduleTruncationTips();
 }
 
-function timeToX(time) {
-  const parts = String(time).split(':');
+function clockMinutes(time) {
+  const parts = String(time || '').split(':');
   const hh = Number(parts[0]);
   const mm = Number(parts[1]);
-  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return 0;
-  const t = hh * 60 + mm;
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return NaN;
+  return hh * 60 + mm;
+}
+
+function timeToX(time) {
+  const t = clockMinutes(time);
+  if (!Number.isFinite(t)) return 0;
   if (currentMarket === 'us') {
-    const start = 21 * 60 + 30;
+    const start = clockMinutes(usSessionBeijing().start);
     const span = 6 * 60 + 30;
     const elapsed = t >= start ? t - start : 24 * 60 - start + t;
     return Math.max(0, Math.min(1, elapsed / span));
@@ -845,6 +883,7 @@ function drawChart() {
   const preClose = Number(active?.preClose);
   const trendName = nameForSecId(selectedSecId);
   chartTitleEl.textContent = `分时 · ${trendName || '--'}`;
+  if (currentMarket === 'us') chartMetaEl.textContent = usSessionBeijing().label;
 
   if (!points.length || !Number.isFinite(preClose)) {
     ctx.fillStyle = 'rgba(234, 238, 245, 0.45)';
@@ -887,7 +926,8 @@ function drawChart() {
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  const midX = currentMarket === 'us' ? left + plotW * ((3.5 * 60) / (6.5 * 60)) : left + plotW * 0.5;
+  const usHours = currentMarket === 'us' ? usSessionBeijing() : null;
+  const midX = usHours ? left + plotW * ((3.5 * 60) / (6.5 * 60)) : left + plotW * 0.5;
   ctx.moveTo(midX, top);
   ctx.lineTo(midX, bottom);
   ctx.stroke();
@@ -954,16 +994,16 @@ function drawChart() {
   ctx.textAlign = 'left';
   const startLabel = currentMarket === 'crypto'
     ? (points[0].time || '24h')
-    : currentMarket === 'us' ? '21:30' : '9:30';
+    : usHours ? usHours.start : '9:30';
   const midLabel = currentMarket === 'crypto'
     ? (points[Math.floor(points.length / 2)].time || '')
-    : currentMarket === 'us' ? '01:00' : '11:30/13:00';
+    : usHours ? usHours.mid : '11:30/13:00';
   const endLabel = currentMarket === 'crypto'
     ? (points[points.length - 1].time || '')
-    : currentMarket === 'us' ? '04:00' : '15:00';
+    : usHours ? usHours.end : '15:00';
   ctx.fillText(startLabel, left, height - 2);
   ctx.textAlign = 'center';
-  ctx.fillText(midLabel, left + plotW * 0.5, height - 2);
+  ctx.fillText(midLabel, midX, height - 2);
   ctx.textAlign = 'right';
   ctx.fillText(endLabel, right, height - 2);
 }
