@@ -1,0 +1,142 @@
+{
+  "refreshIntervalMs": 5000,
+  "opacity": 0.88,
+  "clickThrough": false,
+  "theme": "moon",
+  "market": "crypto",
+  "cnIndex": {
+    "secId": "1.000001",
+    "name": "上证指数"
+  },
+  "usIndex": {
+    "secId": "100.NDX100",
+    "name": "纳斯达克100"
+  },
+  "cryptoIndex": {
+    "secId": "crypto.BTC.spot",
+    "name": "比特币"
+  },
+  "stocks": [
+    {
+      "code": "300058",
+      "cost": 13.29
+    },
+    {
+      "code": "002181",
+      "cost": 11.46
+    },
+    {
+      "code": "300773",
+      "cost": 15.25
+    },
+    {
+      "code": "301171",
+      "cost": 34.68
+    },
+    {
+      "code": "600664",
+      "cost": 6.18
+    },
+    {
+      "code": "300438",
+      "cost": 0
+    },
+    {
+      "code": "600162",
+      "cost": 5.4
+    },
+    {
+      "code": "603052",
+      "cost": 60.55
+    },
+    {
+      "code": "002192",
+      "cost": 73.96
+    },
+    {
+      "code": "000566",
+      "cost": 4.99
+    },
+    {
+      "code": "603399",
+      "cost": 0
+    },
+    {
+      "code": "603115",
+      "cost": 0
+    },
+    {
+      "code": "002647",
+      "cost": 0
+    },
+    {
+      "code": "000811",
+      "cost": 0
+    },
+    {
+      "code": "300139",
+      "cost": 0
+    },
+    {
+      "code": "300432",
+      "cost": 0
+    },
+    {
+      "code": "603618",
+      "cost": 0
+    },
+    {
+      "code": "000533",
+      "cost": 0
+    }
+  ],
+  "usStocks": [
+    {
+      "code": "AAPL",
+      "cost": 0
+    },
+    {
+      "code": "NVDA",
+      "cost": 0
+    },
+    {
+      "code": "TSLA",
+      "cost": 0
+    },
+    {
+      "code": "MSFT",
+      "cost": 0
+    },
+    {
+      "code": "GOOGL",
+      "cost": 0
+    }
+  ],
+  "cryptoStocks": [
+    {
+      "code": "BTC-PERP",
+      "cost": 64450,
+      "watch": true,
+      "leverage": 20,
+      "side": "buy"
+    },
+    {
+      "code": "BTC",
+      "cost": 0
+    },
+    {
+      "code": "ETH",
+      "cost": 0
+    },
+    {
+      "code": "ETH-PERP",
+      "cost": 0
+    }
+  ],
+  "quoteProvider": "eastmoney",
+  "alertSensitivity": 1,
+  "alertSound": true,
+  "capsuleMode": true,
+  "alertPct": 5,
+  "scale": 1
+}
