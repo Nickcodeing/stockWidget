@@ -7,10 +7,12 @@ const {
   nativeImage,
   globalShortcut,
   screen,
-  Notification
+  Notification,
+  shell
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
 
 process.on('uncaughtException', (err) => {
   console.error('[stock-widget] uncaught:', err);
@@ -30,6 +32,8 @@ const STALE_SWITCH_HINT = 8;
 let refreshEpoch = 0;
 
 let win;
+let toastWins = new Map();
+let toastTopTimer = null;
 let tray;
 let trayBlinkTimer = null;
 let trayBlinkLit = true;
@@ -42,6 +46,9 @@ let watchFetching = false;
 let marketWasOpen = false;
 const ALL_MARKETS = ['cn', 'us', 'crypto'];
 const CLOSED_WAKE_MS = 60 * 1000;
+const lastQuotesByMarket = { cn: [], us: [], crypto: [] };
+const lastOtherFetchAt = { cn: 0, us: 0, crypto: 0 };
+const CLOSED_QUOTE_MS = 120 * 1000;
 const WEEKDAYS = new Set(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']);
 let clickThroughEnabled = false;
 let userPrefClickThrough = false;
@@ -58,7 +65,15 @@ let fileWatchers = [];
 const alertLatch = new Map();
 const recentTicks = new Map();
 let lastMoveNotice = null;
+let toastHideTimer = null;
+let alertNagTimer = null;
+let testAlertTimer = null;
+let pendingTestAlert = null;
 const ALERT_KEEP = 80;
+const ALERT_NAG_MS = 2 * 60 * 1000;
+const TOAST_WIDTH = 440;
+const TOAST_HEIGHT = 108;
+const TOAST_SHOW_MS = 12 * 1000;
 let alertLog = [];
 const TICK_KEEP_MS = 75 * 60 * 1000;
 const TICK_MAX = 960;
@@ -72,6 +87,8 @@ const SESSION_GAP_MAX_MS = 24 * 60 * 60 * 1000;
 
 const WINDOW_WIDTH = 368;
 const WINDOW_HEIGHT = 292;
+const CAPSULE_WIDTH = 320;
+const CAPSULE_HEIGHT = 48;
 const SCALE_MIN = 0.7;
 const SCALE_MAX = 1.6;
 const SCALE_STEP = 0.05;
@@ -113,8 +130,18 @@ function currentScale() {
   return parseScale(config && config.scale);
 }
 
+function isCapsuleMode() {
+  return !!(config && config.capsuleMode);
+}
+
 function windowSize() {
   const s = currentScale();
+  if (isCapsuleMode()) {
+    return {
+      width: Math.round(CAPSULE_WIDTH * s),
+      height: Math.round(CAPSULE_HEIGHT * s)
+    };
+  }
   return {
     width: Math.round(WINDOW_WIDTH * s),
     height: Math.round(WINDOW_HEIGHT * s)
@@ -178,6 +205,27 @@ function nudgeScale(dir) {
   return setScale(currentScale() + step);
 }
 
+function setCapsuleMode(on) {
+  loadConfig();
+  const next = !!on;
+  if (config.capsuleMode === next) {
+    applyWindowScale();
+    if (win && !win.isDestroyed()) win.webContents.send('capsule-changed', next);
+    return next;
+  }
+  config.capsuleMode = next;
+  saveConfig();
+  applyWindowScale();
+  if (win && !win.isDestroyed()) win.webContents.send('capsule-changed', next);
+  updateTray();
+  if (next) pollWatchedMarkets();
+  return next;
+}
+
+function toggleCapsuleMode() {
+  return setCapsuleMode(!isCapsuleMode());
+}
+
 function loadPosition() {
   const { width, height } = windowSize();
   try {
@@ -232,7 +280,9 @@ function defaultConfig() {
     usStocks: [],
     cryptoStocks: DEFAULT_CRYPTO_STOCKS.map((item) => ({ ...item })),
     quoteProvider: 'eastmoney',
-    alertSensitivity: 1
+    alertSensitivity: 1,
+    alertSound: true,
+    capsuleMode: false
   };
 }
 
@@ -509,6 +559,7 @@ function attachPositions(quotes, market) {
     delete next.leverage;
     delete next.side;
     const item = pos.get(quoteCostKey(q && q.code, m));
+    next.market = m;
     if (!item) return next;
     if (item.cost > 0) next.cost = item.cost;
     if (item.leverage > 0) next.leverage = item.leverage;
@@ -516,6 +567,50 @@ function attachPositions(quotes, market) {
     if (item.watch) next.watch = true;
     return next;
   });
+}
+
+function rememberMarketQuotes(market, quotes) {
+  const m = normalizeMarket(market);
+  lastQuotesByMarket[m] = Array.isArray(quotes) ? quotes.map((q) => ({ ...q, market: m })) : [];
+}
+
+function marketShortLabel(market) {
+  const m = normalizeMarket(market);
+  if (m === 'us') return '美';
+  if (m === 'crypto') return '币';
+  return 'A';
+}
+
+function capsuleWatchQuotes() {
+  const out = [];
+  ALL_MARKETS.forEach((m) => {
+    const cached = lastQuotesByMarket[m] || [];
+    const byCode = new Map();
+    cached.forEach((q) => {
+      if (!q || !q.code) return;
+      byCode.set(quoteCostKey(q.code, m), q);
+    });
+    watchedItems(m).forEach((item) => {
+      const key = quoteCostKey(item.code, m);
+      const q = byCode.get(key);
+      const base = q ? { ...q } : { code: item.code, name: '', price: null, pct: null };
+      if (item.cost > 0) base.cost = item.cost;
+      if (item.leverage > 0) base.leverage = item.leverage;
+      if (item.side) base.side = item.side;
+      if (m === 'crypto') {
+        const inst = parseCryptoInstrument(item.code);
+        if (inst) {
+          if (!base.kind) base.kind = inst.kind;
+          if (!base.kindLabel) base.kindLabel = inst.kind === 'perp' ? '永续' : '现货';
+        }
+      }
+      base.watch = true;
+      base.market = m;
+      base.marketLabel = marketShortLabel(m);
+      out.push(base);
+    });
+  });
+  return out;
 }
 
 function applyLoadedConfig(data) {
@@ -534,6 +629,8 @@ function applyLoadedConfig(data) {
   }
   config.quoteProvider = normalizeProviderId(config.quoteProvider);
   config.alertSensitivity = parseAlertSensitivity(config.alertSensitivity);
+  config.alertSound = data && data.alertSound === false ? false : true;
+  config.capsuleMode = config.capsuleMode === true;
   if (data && Number.isFinite(Number(data.scale)) && Number(data.scale) > 0) {
     config.scale = parseScale(data.scale);
   } else {
@@ -706,6 +803,7 @@ function sendQuotes(payload) {
     payload.focusIndex = pendingFocusIndex;
     pendingFocusIndex = undefined;
   }
+  payload.capsuleQuotes = capsuleWatchQuotes();
   lastPayload = { ...payload };
   delete lastPayload.alerts;
   delete lastPayload.focusIndex;
@@ -977,34 +1075,224 @@ function canFireAlert(key, dir, price, needPct, lev, grind) {
   return extra >= needPct * REFIRE_EXTRA;
 }
 
+function namedAlert(item) {
+  const name = (item && item.name) || (item && item.code) || '';
+  return item && item.marketLabel ? `${item.marketLabel} · ${name}` : name;
+}
+
+function alertNoticeCopy(items) {
+  const first = items[0];
+  const title = items.length === 1
+    ? `${namedAlert(first)} ${alertDirLabel(first.dir, first.grind)}`
+    : `关注标的突变（${items.length}）`;
+  const lines = items.slice(0, 4).map((item) => {
+    const price = Number(item.price);
+    const priceText = Number.isFinite(price) && price > 0 ? `  ${price.toFixed(2)}` : '';
+    const action = items.length === 1 ? '' : `${alertDirLabel(item.dir, item.grind)}  `;
+    const span = item.gap ? '跳空' : `约${formatAlertSpan(item.spanMs)}`;
+    return `${namedAlert(item)}  ${action}${span} ${formatAlertGear(item)}${formatAlertPct(item.movePct)}${priceText}`;
+  });
+  const market = first && first.market;
+  const greenUp = market === 'us' || market === 'crypto';
+  const isDown = first && first.dir === 'down';
+  return {
+    title,
+    body: lines.join('\n'),
+    line: lines[0] || '',
+    tone: (greenUp ? !isDown : isDown) ? 'green' : 'red'
+  };
+}
+
+function alertSoundOn() {
+  return !config || config.alertSound !== false;
+}
+
+function setAlertSoundPref(enabled) {
+  loadConfig();
+  config.alertSound = !!enabled;
+  saveConfig();
+  updateTray();
+  return config.alertSound;
+}
+
+function playAlertSound() {
+  if (!alertSoundOn()) return;
+  if (process.platform === 'win32') {
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', '[console]::beep(880,160); [console]::beep(1319,220)'],
+      { windowsHide: true, stdio: 'ignore' }
+    );
+    child.on('error', () => {
+      try { shell.beep(); } catch (_) { /* ignore */ }
+    });
+    child.unref();
+    return;
+  }
+  try { shell.beep(); } catch (_) { /* ignore */ }
+}
+
+function stopAlertNag() {
+  if (!alertNagTimer) return;
+  clearInterval(alertNagTimer);
+  alertNagTimer = null;
+}
+
+function syncAlertNag() {
+  if (unreadAlertCount() > 0 && !isWidgetVisible()) {
+    if (alertNagTimer) return;
+    alertNagTimer = setInterval(() => {
+      if (unreadAlertCount() <= 0 || isWidgetVisible()) {
+        stopAlertNag();
+        return;
+      }
+      playAlertSound();
+    }, ALERT_NAG_MS);
+    return;
+  }
+  stopAlertNag();
+}
+
+function ensureNotificationShortcut() {
+  if (process.platform !== 'win32') return;
+  const programs = path.join(
+    app.getPath('appData'),
+    'Microsoft',
+    'Windows',
+    'Start Menu',
+    'Programs'
+  );
+  try {
+    fs.mkdirSync(programs, { recursive: true });
+  } catch (_) {
+    /* ignore */
+  }
+  const shortcut = path.join(programs, 'StockWidget.lnk');
+  const iconFile = path.join(__dirname, 'icon.png');
+  const opts = {
+    target: process.execPath,
+    args: app.isPackaged ? '' : `"${path.resolve(__dirname)}"`,
+    cwd: path.resolve(__dirname),
+    appUserModelId: 'com.local.stockwidget',
+    description: '悬浮行情',
+    icon: fs.existsSync(iconFile) ? iconFile : process.execPath,
+    iconIndex: 0
+  };
+  try {
+    shell.writeShortcutLink(shortcut, fs.existsSync(shortcut) ? 'update' : 'create', opts);
+  } catch (err) {
+    console.error('[stock-widget] shortcut error:', err.message || err);
+  }
+}
+
+function stopToastTop() {
+  if (!toastTopTimer) return;
+  clearInterval(toastTopTimer);
+  toastTopTimer = null;
+}
+
+function bumpToastWindows() {
+  toastWins.forEach((w) => {
+    if (!w || w.isDestroyed() || !w.isVisible()) return;
+    w.setAlwaysOnTop(true, 'screen-saver');
+  });
+}
+
+function startToastTop() {
+  stopToastTop();
+  bumpToastWindows();
+  toastTopTimer = setInterval(bumpToastWindows, 300);
+}
+
+function hideAlertOverlay() {
+  clearTimeout(toastHideTimer);
+  toastHideTimer = null;
+  stopToastTop();
+  toastWins.forEach((w) => {
+    if (w && !w.isDestroyed() && w.isVisible()) w.hide();
+  });
+}
+
+function placeToastOnDisplay(w, display) {
+  const bounds = display.bounds;
+  const x = Math.round(bounds.x + (bounds.width - TOAST_WIDTH) / 2);
+  const y = Math.round(bounds.y + Math.max(24, Math.round(bounds.height * 0.06)));
+  w.setBounds({ x, y, width: TOAST_WIDTH, height: TOAST_HEIGHT });
+}
+
+function ensureToastWindow(display) {
+  const id = display.id;
+  const prev = toastWins.get(id);
+  if (prev && !prev.isDestroyed()) return prev;
+  const w = new BrowserWindow({
+    width: TOAST_WIDTH,
+    height: TOAST_HEIGHT,
+    show: false,
+    frame: false,
+    transparent: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    focusable: true,
+    fullscreenable: false,
+    minimizable: false,
+    maximizable: false,
+    hasShadow: true,
+    backgroundColor: '#f5c518',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-toast.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  w.setAlwaysOnTop(true, 'screen-saver');
+  w.setSkipTaskbar(true);
+  w.loadFile(path.join(__dirname, 'renderer', 'toast.html'));
+  w.on('closed', () => {
+    if (toastWins.get(id) === w) toastWins.delete(id);
+  });
+  toastWins.set(id, w);
+  return w;
+}
+
+function showAlertOverlay(items) {
+  if (!items || !items.length) return;
+  const copy = alertNoticeCopy(items);
+  const payload = JSON.stringify({
+    title: copy.title,
+    body: copy.line
+  });
+  const windows = screen.getAllDisplays().map((display) => {
+    const w = ensureToastWindow(display);
+    placeToastOnDisplay(w, display);
+    return w;
+  });
+  const apply = (w) => {
+    if (!w || w.isDestroyed()) return;
+    w.webContents.executeJavaScript(`window.stockToast && window.stockToast.set(${payload})`).catch(() => {});
+    w.setAlwaysOnTop(true, 'screen-saver');
+    w.showInactive();
+  };
+  windows.forEach((w) => {
+    if (w.webContents.isLoading()) w.webContents.once('did-finish-load', () => apply(w));
+    else apply(w);
+  });
+  startToastTop();
+  clearTimeout(toastHideTimer);
+  toastHideTimer = setTimeout(() => hideAlertOverlay(), TOAST_SHOW_MS);
+}
+
 function showMoveNotification(items) {
   if (!Notification.isSupported() || !items.length) return;
+  const copy = alertNoticeCopy(items);
   const iconFile = path.join(__dirname, 'icon.png');
   const icon = fs.existsSync(iconFile) ? iconFile : undefined;
-  const first = items[0];
-  const named = (item) => {
-    const name = item.name || item.code;
-    return item.marketLabel ? `${item.marketLabel} · ${name}` : name;
-  };
-  const title = items.length === 1
-    ? `${named(first)} ${alertDirLabel(first.dir, first.grind)}`
-    : `关注标的突变（${items.length}）`;
-  const body = items
-    .slice(0, 4)
-    .map((item) => {
-      const price = Number(item.price);
-      const priceText = Number.isFinite(price) && price > 0 ? `  ${price.toFixed(2)}` : '';
-      const action = items.length === 1 ? '' : `${alertDirLabel(item.dir, item.grind)}  `;
-      const span = item.gap ? '跳空' : `约${formatAlertSpan(item.spanMs)}`;
-      return `${named(item)}  ${action}${span} ${formatAlertGear(item)}${formatAlertPct(item.movePct)}${priceText}`;
-    })
-    .join('\n');
   try {
     const notice = new Notification({
-      title,
-      body,
+      title: copy.title,
+      body: copy.line || copy.body,
       icon,
-      silent: false
+      silent: true
     });
     notice.on('click', () => showWidget());
     notice.show();
@@ -1012,6 +1300,68 @@ function showMoveNotification(items) {
   } catch (err) {
     console.error('[stock-widget] notify error:', err.message || err);
   }
+}
+
+function announceAlerts(items) {
+  if (!items || !items.length) return;
+  playAlertSound();
+  showAlertOverlay(items);
+  showMoveNotification(items);
+}
+
+function testAlertPath() {
+  return path.join(__dirname, 'test-alert.json');
+}
+
+function readTestAlertRequest() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(testAlertPath(), 'utf-8'));
+    const delayMs = Number(raw && raw.delayMs);
+    return {
+      delayMs: Number.isFinite(delayMs) && delayMs >= 0 ? delayMs : 5000
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function consumeTestAlertRequest() {
+  const req = readTestAlertRequest();
+  if (!req) return null;
+  try {
+    fs.unlinkSync(testAlertPath());
+  } catch (_) {
+    /* ignore */
+  }
+  return req;
+}
+
+function fireTestAlert() {
+  const item = {
+    secId: 'test.alert',
+    code: 'TEST',
+    name: '提醒测试',
+    price: 100.25,
+    dir: 'up',
+    movePct: 3.21,
+    spanMs: 8000,
+    gap: false,
+    grind: false,
+    market: currentMarket(),
+    marketLabel: marketLabel(currentMarket())
+  };
+  pushAlertLog([item]);
+  announceAlerts([item]);
+}
+
+function scheduleTestAlert(delayMs) {
+  const wait = Number.isFinite(Number(delayMs)) ? Math.max(0, Number(delayMs)) : 5000;
+  clearTimeout(testAlertTimer);
+  console.log(`[stock-widget] ${Math.round(wait / 1000)} 秒后发出测试提醒`);
+  testAlertTimer = setTimeout(() => {
+    testAlertTimer = null;
+    fireTestAlert();
+  }, wait);
 }
 
 function normalizeAlertItem(item) {
@@ -1073,6 +1423,7 @@ function sendAlertList() {
     win.webContents.send('alerts-changed', alertListPayload());
   }
   updateTray();
+  syncAlertNag();
 }
 
 function pushAlertLog(fired) {
@@ -1193,7 +1544,7 @@ function maybeAlert(quotes, market) {
   });
   if (fired.length) {
     pushAlertLog(fired);
-    showMoveNotification(fired);
+    announceAlerts(fired);
   }
   return fired;
 }
@@ -1243,6 +1594,7 @@ function pickTrendChart(trends) {
 
 function sendLiveQuotes(quoteData, chart) {
   const quotes = attachPositions(quoteData.quotes, currentMarket());
+  rememberMarketQuotes(currentMarket(), quotes);
   const alerts = maybeAlert(quotes, currentMarket());
   sendQuotes({
     quotes: decorateSudden(quotes),
@@ -1440,7 +1792,7 @@ function suggestSwitchMeta(hasLastGood) {
 }
 
 function pollWatchedMarkets() {
-  if (watchFetching || fetching) return Promise.resolve();
+  if (watchFetching) return Promise.resolve();
   try {
     loadConfig();
   } catch (err) {
@@ -1453,13 +1805,23 @@ function pollWatchedMarkets() {
     const items = watchedItems(m);
     if (!items.length) {
       pruneMarketWatchState(m);
+      lastQuotesByMarket[m] = [];
       return;
     }
     if (m === current) return;
-    if (!isMarketOpen(m)) return;
+    const open = isMarketOpen(m);
+    const cached = lastQuotesByMarket[m] || [];
+    const now = Date.now();
+    if (!open && cached.length && now - lastOtherFetchAt[m] < CLOSED_QUOTE_MS) return;
     jobs.push(
       fetchQuotesResilient(m, items.map((item) => item.code))
-        .then(({ quoteData }) => maybeAlert(attachPositions(quoteData.quotes || [], m), m))
+        .then(({ quoteData }) => {
+          lastOtherFetchAt[m] = Date.now();
+          const quotes = attachPositions(quoteData.quotes || [], m);
+          rememberMarketQuotes(m, quotes);
+          if (open) maybeAlert(quotes, m);
+          return quotes;
+        })
         .catch((err) => {
           console.error(`[stock-widget] watch ${m} error:`, err.message || err);
           return [];
@@ -1470,6 +1832,7 @@ function pollWatchedMarkets() {
   watchFetching = true;
   return Promise.all(jobs).finally(() => {
     watchFetching = false;
+    if (lastPayload) sendQuotes({ ...lastPayload });
   });
 }
 
@@ -1584,6 +1947,7 @@ function isWidgetVisible() {
 function showWidget() {
   if (!win || win.isDestroyed()) return;
   pointerOver = false;
+  hideAlertOverlay();
   win.show();
   win.setAlwaysOnTop(true, 'screen-saver');
   win.webContents.send('widget-reset');
@@ -1638,7 +2002,7 @@ function loadTrayIcons() {
 }
 
 function shouldBlinkTray() {
-  return !isWidgetVisible() && unreadAlertCount() > 0;
+  return unreadAlertCount() > 0;
 }
 
 function stopTrayBlink() {
@@ -1672,6 +2036,7 @@ function syncTrayBlink() {
 
 function updateTray() {
   if (!tray) return;
+  syncAlertNag();
   const visible = isWidgetVisible();
   const unread = unreadAlertCount();
   if (!visible && unread > 0) {
@@ -1685,6 +2050,10 @@ function updateTray() {
       {
         label: visible ? '隐藏插件' : '显示插件',
         click: () => toggleWidget()
+      },
+      {
+        label: '测试提醒（5秒）',
+        click: () => scheduleTestAlert(5000)
       },
       { type: 'separator' },
       {
@@ -1715,10 +2084,22 @@ function updateTray() {
         }))
       },
       {
+        label: '胶囊模式',
+        type: 'checkbox',
+        checked: isCapsuleMode(),
+        click: (item) => setCapsuleMode(!!item.checked)
+      },
+      {
         label: '鼠标穿透',
         type: 'checkbox',
         checked: userPrefClickThrough,
         click: (item) => setClickThroughPref(!!item.checked)
+      },
+      {
+        label: '提醒声音',
+        type: 'checkbox',
+        checked: alertSoundOn(),
+        click: (item) => setAlertSoundPref(!!item.checked)
       },
       { type: 'separator' },
       { label: '退出', click: () => app.quit() }
@@ -1800,6 +2181,7 @@ function watchDevReload() {
   ];
   const mtimes = new Map();
   watched.forEach((file) => mtimes.set(file, fileMtime(file)));
+  let testAlertStamp = fileMtime(testAlertPath());
 
   const timer = setInterval(() => {
     const latest = [
@@ -1833,6 +2215,14 @@ function watchDevReload() {
     [...mtimes.keys()].forEach((file) => {
       if (!latest.includes(file)) mtimes.delete(file);
     });
+    const testStamp = fileMtime(testAlertPath());
+    if (testStamp && testStamp !== testAlertStamp) {
+      testAlertStamp = testStamp;
+      const req = consumeTestAlertRequest();
+      if (req) scheduleTestAlert(req.delayMs);
+    } else if (!testStamp) {
+      testAlertStamp = 0;
+    }
   }, 400);
 
   fileWatchers.push({
@@ -1850,6 +2240,9 @@ function registerShortcuts() {
   globalShortcut.register('CommandOrControl+Shift+R', () => {
     reloadAll();
   });
+  globalShortcut.register('CommandOrControl+Shift+C', () => {
+    toggleCapsuleMode();
+  });
 }
 
 function createWindow() {
@@ -1863,6 +2256,7 @@ function createWindow() {
     height: size.height,
     x: pos.x,
     y: pos.y,
+    show: !pendingTestAlert,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -1887,6 +2281,11 @@ function createWindow() {
       /* ignore */
     }
     applyWindowScale();
+    try {
+      win.webContents.send('capsule-changed', isCapsuleMode());
+    } catch (_) {
+      /* ignore */
+    }
     syncClickThrough();
     pushQuotesToRenderer();
     sendAlertList();
@@ -1921,6 +2320,8 @@ ipcMain.handle('set-quote-provider', (_, id) => setQuoteProvider(id));
 ipcMain.handle('toggle-click-through', () => toggleClickThrough());
 ipcMain.handle('nudge-scale', (_, dir) => nudgeScale(dir));
 ipcMain.handle('set-scale', (_, next) => setScale(next));
+ipcMain.handle('toggle-capsule', () => toggleCapsuleMode());
+ipcMain.handle('set-capsule', (_, on) => setCapsuleMode(!!on));
 
 ipcMain.handle('stock-order-info', (_, code) => {
   loadConfig();
@@ -1935,6 +2336,11 @@ ipcMain.handle('stock-order-info', (_, code) => {
 ipcMain.on('reorder-stock', (_, payload) => {
   if (!payload || !payload.code || !payload.action) return;
   reorderStock(payload.code, payload.action);
+});
+
+ipcMain.on('toast-click', () => {
+  hideAlertOverlay();
+  showWidget();
 });
 
 ipcMain.handle('toggle-watch', (_, code) => {
@@ -1981,20 +2387,27 @@ ipcMain.on('move-window', (_, dx, dy) => {
 
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.local.stockwidget');
+  app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 }
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv) => {
+    if ((argv || []).includes('--test-alert')) {
+      scheduleTestAlert(5000);
+      return;
+    }
     showWidget();
   });
 
   app.whenReady().then(() => {
+    ensureNotificationShortcut();
     loadConfig();
     alertLog = loadAlertLog();
     selectedSecId = indexSecId();
+    pendingTestAlert = consumeTestAlertRequest();
     createWindow();
     createTray();
     startPointerPoll();
@@ -2002,6 +2415,13 @@ if (!gotLock) {
     refreshQuotes();
     startRefresh();
     watchDevReload();
+    if (pendingTestAlert) {
+      const delayMs = pendingTestAlert.delayMs;
+      pendingTestAlert = null;
+      scheduleTestAlert(delayMs);
+    } else if (process.argv.includes('--test-alert')) {
+      scheduleTestAlert(5000);
+    }
   });
 }
 
@@ -2014,6 +2434,16 @@ app.on('will-quit', () => {
   stopRefresh();
   stopWatchPoll();
   stopTrayBlink();
+  stopAlertNag();
+  hideAlertOverlay();
+  clearTimeout(testAlertTimer);
+  testAlertTimer = null;
+  toastWins.forEach((w) => {
+    if (w && !w.isDestroyed()) {
+      try { w.destroy(); } catch (_) { /* ignore */ }
+    }
+  });
+  toastWins.clear();
   fileWatchers.forEach((w) => {
     try {
       w.close();

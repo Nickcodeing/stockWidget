@@ -20,6 +20,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "preload-toast.js",
       "lib/**/*",
       "stocks.example.json",
       "icon.png",

@@ -69,9 +69,14 @@ function indexSecId() {
   return indexSpec.secId;
 }
 
+function itemMarket(q) {
+  if (q && (q.market === 'us' || q.market === 'crypto' || q.market === 'cn')) return q.market;
+  return currentMarket;
+}
+
 function rowSecId(q) {
   if (q?.secId) return q.secId;
-  if (currentMarket === 'crypto') {
+  if (itemMarket(q) === 'crypto') {
     const code = String(q?.code || '').toUpperCase();
     if (!code) return '';
     if (code.endsWith('-PERP') || code.endsWith('PERP')) {
@@ -80,17 +85,18 @@ function rowSecId(q) {
     }
     return `crypto.${code}.spot`;
   }
+  if (itemMarket(q) === 'us') return q.secId || `100.${String(q?.code || '').toUpperCase()}`;
   const c = String(q?.code || '').replace(/\D/g, '').padStart(6, '0');
   return `${c.startsWith('6') ? '1' : '0'}.${c}`;
 }
 
 function rowCode(q) {
-  if (currentMarket === 'us' || currentMarket === 'crypto') return String(q.code || '').toUpperCase();
+  if (itemMarket(q) === 'us' || itemMarket(q) === 'crypto') return String(q.code || '').toUpperCase();
   return String(q.code).replace(/\D/g, '').padStart(6, '0');
 }
 
 function rowCodeLabel(q) {
-  if (currentMarket === 'crypto') return q.kindLabel || (String(q.code || '').endsWith('-PERP') ? '永续' : '现货');
+  if (itemMarket(q) === 'crypto') return q.kindLabel || (String(q.code || '').endsWith('-PERP') ? '永续' : '现货');
   return q.code;
 }
 
@@ -171,6 +177,17 @@ const indexPctEl = document.getElementById('index-pct');
 const chartEl = document.getElementById('chart');
 const chartTitleEl = document.getElementById('chart-title');
 const ctx = chartEl.getContext('2d');
+const capsuleEl = document.getElementById('capsule');
+const capsuleTrackEl = document.getElementById('capsule-track');
+let capsuleMode = false;
+let capsuleIndex = 0;
+let capsuleTimer = null;
+let capsuleQuotes = [];
+let capsulePoolKey = '';
+let lastIndexQuote = null;
+const CAPSULE_ROTATE_MS = 3000;
+const CAPSULE_ITEM_H = 48;
+const CAPSULE_ANIM_MS = 480;
 let currentTheme = 'sun';
 let currentProvider = 'eastmoney';
 let clickThroughPref = false;
@@ -576,6 +593,14 @@ function flashAlertRows(alerts) {
     const q = quotes.find((row) => item && rowCode(row) === rowCode(item));
     if (q) flashSecIds.add(rowSecId(q));
   });
+  if (isCapsuleMode()) {
+    const pool = capsulePool();
+    const idx = pool.findIndex((q) => flashSecIds.has(q.secId || rowSecId(q)));
+    if (idx >= 0) {
+      capsuleIndex = idx;
+      applyCapsuleOffset(true);
+    }
+  }
   render();
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => {
@@ -729,7 +754,133 @@ function costCellHtml(q) {
   return `<span class="price-cost">成本 ${cost.toFixed(2)}${pnlHtml}</span>`;
 }
 
+function isCapsuleMode() {
+  return capsuleMode;
+}
+
+function capsulePool() {
+  const extra = Array.isArray(capsuleQuotes) ? capsuleQuotes.filter((q) => q && q.watch) : [];
+  if (extra.length) return extra;
+  const watched = quotes.filter((q) => q && q.watch);
+  if (watched.length) return watched;
+  if (quotes.length) return quotes;
+  if (lastIndexQuote && (lastIndexQuote.name || lastIndexQuote.code)) return [lastIndexQuote];
+  return [];
+}
+
+function capsuleItemHtml(q) {
+  if (!q) {
+    return '<div class="capsule-item"><span class="cap-name">暂无行情</span><span class="cap-price">--</span><span class="cap-pct flat">--</span></div>';
+  }
+  const { cls, price, pctText } = formatQuote(q);
+  const costHtml = costCellHtml(q);
+  const secId = q.secId || rowSecId(q);
+  const flash = flashSecIds.has(secId) ? ' alert-flash' : '';
+  const mkt = q.marketLabel ? `<span class="cap-mkt">${escapeHtml(q.marketLabel)}</span>` : '';
+  const star = q.watch ? '<span class="cap-star" aria-hidden="true">★</span>' : '';
+  return `<div class="capsule-item${flash}${costHtml ? ' has-cost' : ''}" data-secid="${escapeHtml(secId)}">
+    <span class="cap-name">${mkt}${nameCellHtml(q.name || q.code, rowCodeLabel(q) || q.code)}${star}</span>
+    <span class="cap-price${costHtml ? ' has-cost' : ''}"><span class="price-now">${price}</span>${costHtml}</span>
+    <span class="cap-pct ${cls}">${pctText}</span>
+  </div>`;
+}
+
+function applyCapsuleOffset(animate) {
+  if (!capsuleTrackEl) return;
+  capsuleTrackEl.style.transition = animate ? `transform ${CAPSULE_ANIM_MS}ms ease` : 'none';
+  capsuleTrackEl.style.transform = `translateY(${-capsuleIndex * CAPSULE_ITEM_H}px)`;
+}
+
+function fillCapsuleTrack() {
+  if (!capsuleTrackEl) return;
+  const pool = capsulePool();
+  const key = pool.map((q) => `${itemMarket(q)}:${rowCode(q)}`).join('|');
+  const loop = pool.length > 1;
+  const list = loop && pool[0] ? pool.concat(pool[0]) : (pool.length ? pool : [null]);
+  if (capsuleIndex < 0) capsuleIndex = Math.max(0, pool.length - 1);
+  if (key !== capsulePoolKey || capsuleTrackEl.children.length !== list.length) {
+    if (capsuleIndex >= pool.length) capsuleIndex = 0;
+    capsulePoolKey = key;
+    capsuleTrackEl.innerHTML = list.map(capsuleItemHtml).join('');
+    applyCapsuleOffset(false);
+    return;
+  }
+  const nodes = capsuleTrackEl.querySelectorAll('.capsule-item');
+  list.forEach((q, i) => {
+    if (!nodes[i]) return;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = capsuleItemHtml(q);
+    const next = wrap.firstElementChild;
+    if (!next) return;
+    nodes[i].className = next.className;
+    nodes[i].innerHTML = next.innerHTML;
+    if (next.dataset.secid) nodes[i].dataset.secid = next.dataset.secid;
+  });
+}
+
+function showCapsuleItem(animate) {
+  fillCapsuleTrack();
+  applyCapsuleOffset(!!animate);
+}
+
+function stopCapsuleRotate() {
+  if (!capsuleTimer) return;
+  clearInterval(capsuleTimer);
+  capsuleTimer = null;
+}
+
+function startCapsuleRotate() {
+  if (capsuleTimer) return;
+  if (!isCapsuleMode()) return;
+  if (capsulePool().length <= 1) return;
+  capsuleTimer = setInterval(() => {
+    const pool = capsulePool();
+    if (pool.length <= 1) {
+      stopCapsuleRotate();
+      capsuleIndex = 0;
+      showCapsuleItem(false);
+      return;
+    }
+    capsuleIndex += 1;
+    applyCapsuleOffset(true);
+    if (capsuleIndex >= pool.length) {
+      setTimeout(() => {
+        capsuleIndex = 0;
+        applyCapsuleOffset(false);
+      }, CAPSULE_ANIM_MS);
+    }
+  }, CAPSULE_ROTATE_MS);
+}
+
+function applyCapsule(on) {
+  capsuleMode = !!on;
+  document.documentElement.classList.toggle('capsule', capsuleMode);
+  hideAlertPanel();
+  hideSrcMenu();
+  hideCtxMenu();
+  if (capsuleMode) {
+    showCapsuleItem(false);
+    stopCapsuleRotate();
+    startCapsuleRotate();
+  } else {
+    stopCapsuleRotate();
+    render();
+    drawChart();
+  }
+}
+
+function cycleCapsule(dir) {
+  const pool = capsulePool();
+  if (pool.length <= 1) return;
+  stopCapsuleRotate();
+  if (capsuleIndex >= pool.length) capsuleIndex = 0;
+  capsuleIndex = (capsuleIndex + (dir < 0 ? -1 : 1) + pool.length) % pool.length;
+  applyCapsuleOffset(true);
+  startCapsuleRotate();
+}
+
 function renderIndex(index) {
+  if (index && (index.name || index.code || index.secId)) lastIndexQuote = index;
   const { cls, price, pctText } = formatQuote(index);
   indexPriceEl.textContent = price;
   indexPctEl.textContent = pctText;
@@ -759,6 +910,13 @@ function listItemCount() {
 
 function render() {
   hideHoverTip();
+  if (isCapsuleMode()) {
+    const pool = capsulePool();
+    if (capsuleIndex > pool.length) capsuleIndex = 0;
+    fillCapsuleTrack();
+    startCapsuleRotate();
+    return;
+  }
   listEl.innerHTML = '';
   quotes.forEach((q) => {
     const row = document.createElement('div');
@@ -870,6 +1028,7 @@ function selectLocal(secId) {
 }
 
 function drawChart() {
+  if (isCapsuleMode()) return;
   const dpr = window.devicePixelRatio || 1;
   const width = chartEl.clientWidth || 300;
   const height = chartEl.clientHeight || 78;
@@ -1016,6 +1175,7 @@ window.stockApi.onQuotesUpdate((data) => {
   if (data.quoteProvider) applyProvider(data.quoteProvider, data.quoteProviderLabel, data.quoteProviderShort);
   applyHint(!!data.suggestSwitch && !hasVisibleQuotes(data));
   quotes = data.quotes || [];
+  if (Array.isArray(data.capsuleQuotes)) capsuleQuotes = data.capsuleQuotes;
   if (data.selectedSecId) selectedSecId = data.selectedSecId;
   if (data.trends && (!data.trends.secId || data.trends.secId === selectedSecId)) {
     trends = data.trends;
@@ -1071,6 +1231,11 @@ window.addEventListener('wheel', (e) => {
         .then((s) => applyScaleLabel(s, { reveal: true }))
         .catch(() => {});
     }
+    return;
+  }
+  if (isCapsuleMode()) {
+    e.preventDefault();
+    cycleCapsule(e.deltaY > 0 ? 1 : -1);
     return;
   }
   if (alertPanelOpen()) {
@@ -1215,6 +1380,13 @@ window.addEventListener('mouseout', (e) => {
   if (!dragging) syncPointerOver();
 });
 
+if (capsuleEl) {
+  capsuleEl.addEventListener('dblclick', (e) => {
+    e.stopPropagation();
+    window.stockApi.toggleCapsule().then(applyCapsule).catch(() => {});
+  });
+}
+
 panelEl.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   hideHoverTip();
@@ -1274,6 +1446,7 @@ if (scaleBtn) {
 }
 
 window.stockApi.onScaleChanged((scale) => applyScaleLabel(scale));
+window.stockApi.onCapsuleChanged((on) => applyCapsule(on));
 window.stockApi.getConfig().then((cfg) => {
   savedCfg = cfg || null;
   clickThroughPref = !!(cfg && cfg.clickThrough);
@@ -1281,5 +1454,6 @@ window.stockApi.getConfig().then((cfg) => {
   applyMarket(cfg && cfg.market);
   applyProvider(cfg && cfg.quoteProvider);
   applyScaleLabel(cfg && cfg.scale);
+  applyCapsule(!!(cfg && cfg.capsuleMode));
 });
 window.stockApi.getAlerts().then(applyAlerts).catch(() => {});

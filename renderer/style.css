@@ -578,7 +578,8 @@ html[data-theme="moon"] .icon-sun {
   font-variant-numeric: tabular-nums;
 }
 
-#list .price.has-cost {
+#list .price.has-cost,
+#capsule .cap-price.has-cost {
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -589,7 +590,8 @@ html[data-theme="moon"] .icon-sun {
   line-height: 13px;
 }
 
-#list .price-cost {
+#list .price-cost,
+#capsule .price-cost {
   font-size: 9px;
   line-height: 11px;
   font-weight: 400;
@@ -599,15 +601,18 @@ html[data-theme="moon"] .icon-sun {
   letter-spacing: -0.02em;
 }
 
-#list .cost-pnl.up {
+#list .cost-pnl.up,
+#capsule .cost-pnl.up {
   color: var(--up);
 }
 
-#list .cost-pnl.down {
+#list .cost-pnl.down,
+#capsule .cost-pnl.down {
   color: var(--down);
 }
 
-#list .cost-pnl.flat {
+#list .cost-pnl.flat,
+#capsule .cost-pnl.flat {
   color: var(--text-dim);
 }
 
@@ -715,4 +720,108 @@ html[data-theme="moon"] .icon-sun {
 #ctx-menu button:disabled {
   opacity: 0.34;
   cursor: default;
+}
+
+#capsule {
+  display: none;
+}
+
+html.capsule #header,
+html.capsule #hint-row,
+html.capsule #viewport,
+html.capsule #index,
+html.capsule #alert-panel,
+html.capsule #src-menu,
+html.capsule #ctx-menu,
+html.capsule #hover-tip {
+  display: none !important;
+}
+
+html.capsule #panel {
+  padding: 0;
+  border-radius: 999px;
+}
+
+html.capsule #capsule {
+  display: block;
+  height: 100%;
+  overflow: hidden;
+}
+
+#capsule-track {
+  will-change: transform;
+}
+
+.capsule-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(108px, 1.25fr) minmax(56px, 0.7fr);
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+#capsule .cap-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+#capsule .cap-name .name-text {
+  min-width: 0;
+}
+
+#capsule .cap-name .name-code {
+  flex: 0 0 auto;
+  line-height: 1.2;
+  margin-left: 0;
+}
+
+#capsule .cap-mkt {
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: var(--status);
+  background: rgba(120, 170, 255, 0.16);
+}
+
+#capsule .cap-star {
+  flex: 0 0 auto;
+  color: #f5c518;
+  font-size: 11px;
+  line-height: 1;
+}
+
+#capsule .cap-price,
+#capsule .cap-pct {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#capsule .cap-price.has-cost {
+  align-items: flex-end;
+  min-width: 0;
+}
+
+#capsule .cap-price.has-cost .price-now {
+  line-height: 15px;
+}
+
+#capsule .price-cost {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+html.capsule .capsule-item.alert-flash {
+  animation: alert-flash 0.9s ease 3;
 }

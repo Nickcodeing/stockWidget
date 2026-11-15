@@ -2,6 +2,7 @@ node_modules/
 position.json
 stocks.json
 alerts.json
+test-alert.json
 .idea/
 *.lnk
 Thumbs.db
