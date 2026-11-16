@@ -183,6 +183,7 @@ let capsuleMode = false;
 let capsuleIndex = 0;
 let capsuleTimer = null;
 let capsuleQuotes = [];
+let watchSpecs = [];
 let capsulePoolKey = '';
 let lastIndexQuote = null;
 const CAPSULE_ROTATE_MS = 3000;
@@ -212,10 +213,24 @@ function alertPanelOpen() {
   return !!(alertPanelEl && !alertPanelEl.hidden);
 }
 
+function placeAlertButton() {
+  if (!alertBtn) return;
+  if (isCapsuleMode() && capsuleEl) {
+    capsuleEl.appendChild(alertBtn);
+    return;
+  }
+  if (themeBtn && themeBtn.parentElement) {
+    themeBtn.parentElement.insertBefore(alertBtn, themeBtn);
+  }
+}
+
 function hideAlertPanel() {
-  if (!alertPanelEl) return;
-  alertPanelEl.hidden = true;
+  if (alertPanelEl) alertPanelEl.hidden = true;
   if (alertBtn) alertBtn.classList.remove('open');
+  document.documentElement.classList.remove('capsule-alerts');
+  if (window.stockApi.setCapsuleAlerts) {
+    window.stockApi.setCapsuleAlerts(false).catch(() => {});
+  }
 }
 
 function formatAlertPct(pct) {
@@ -306,6 +321,13 @@ function applyAlerts(data) {
 function showAlertPanel() {
   hideCtxMenu();
   hideSrcMenu();
+  if (isCapsuleMode()) {
+    if (alertBtn) alertBtn.classList.add('open');
+    if (window.stockApi.setCapsuleAlerts) {
+      window.stockApi.setCapsuleAlerts(true).catch(() => {});
+    }
+    return;
+  }
   if (!alertPanelEl) return;
   alertPanelEl.hidden = false;
   if (alertBtn) alertBtn.classList.add('open');
@@ -313,6 +335,11 @@ function showAlertPanel() {
 }
 
 function toggleAlertPanel() {
+  if (isCapsuleMode()) {
+    if (alertBtn && alertBtn.classList.contains('open')) hideAlertPanel();
+    else showAlertPanel();
+    return;
+  }
   if (alertPanelOpen()) hideAlertPanel();
   else showAlertPanel();
 }
@@ -758,14 +785,127 @@ function isCapsuleMode() {
   return capsuleMode;
 }
 
+function capsulePoolKeyOf(q) {
+  if (!q) return '';
+  return `${itemMarket(q)}:${rowSecId(q) || rowCode(q)}`;
+}
+
+function watchSpecsFromConfig(cfg) {
+  if (!cfg) return [];
+  const specs = [];
+  const padCnCode = (code) => String(code || '').replace(/\D/g, '').padStart(6, '0');
+  (cfg.stocks || []).forEach((item) => {
+    if (!item || !item.watch) return;
+    const code = padCnCode(item.code);
+    if (!code || code === '000000') return;
+    specs.push({
+      market: 'cn',
+      marketLabel: 'A',
+      code,
+      watch: true,
+      cost: item.cost,
+      secId: `${code.startsWith('6') ? '1' : '0'}.${code}`
+    });
+  });
+  (cfg.usStocks || []).forEach((item) => {
+    if (!item || !item.watch) return;
+    const code = String(item.code || '').toUpperCase();
+    if (!code) return;
+    specs.push({ market: 'us', marketLabel: '美', code, watch: true, cost: item.cost });
+  });
+  (cfg.cryptoStocks || []).forEach((item) => {
+    if (!item || !item.watch) return;
+    const raw = String(item.code || '').toUpperCase().replace(/\s+/g, '');
+    const perp = raw.includes('PERP');
+    const base = raw.replace(/-PERP$/, '').replace(/PERP$/, '').replace(/-USDT$/, '').replace(/USDT$/, '');
+    const name = base === 'ETH' ? '以太坊' : (base === 'BTC' || base === 'XBT' ? '比特币' : base);
+    specs.push({
+      market: 'crypto',
+      marketLabel: '币',
+      code: perp ? `${base}-PERP` : base,
+      name,
+      kind: perp ? 'perp' : 'spot',
+      kindLabel: perp ? '永续' : '现货',
+      watch: true,
+      cost: item.cost,
+      leverage: item.leverage,
+      side: item.side,
+      secId: `crypto.${base}.${perp ? 'perp' : 'spot'}`
+    });
+  });
+  return specs;
+}
+
+function applyWatchSpecs(cfg) {
+  if (cfg) savedCfg = cfg;
+  watchSpecs = watchSpecsFromConfig(savedCfg);
+}
+
 function capsulePool() {
-  const extra = Array.isArray(capsuleQuotes) ? capsuleQuotes.filter((q) => q && q.watch) : [];
-  if (extra.length) return extra;
-  const watched = quotes.filter((q) => q && q.watch);
-  if (watched.length) return watched;
+  const live = new Map();
+  const putLive = (q) => {
+    if (!q) return;
+    const k = capsulePoolKeyOf(q);
+    if (!k || k.endsWith(':')) return;
+    const prev = live.get(k);
+    const hasPrice = Number(q.price) > 0;
+    const prevPrice = prev && Number(prev.price) > 0;
+    if (!prev || (hasPrice && !prevPrice)) live.set(k, q);
+  };
+  (Array.isArray(capsuleQuotes) ? capsuleQuotes : []).forEach(putLive);
+  quotes.forEach(putLive);
+
+  const seen = new Set();
+  const out = [];
+  const push = (q) => {
+    const k = capsulePoolKeyOf(q);
+    if (!k || k.endsWith(':') || seen.has(k)) return;
+    seen.add(k);
+    out.push(q);
+  };
+
+  watchSpecs.forEach((spec) => {
+    const hit = live.get(capsulePoolKeyOf(spec));
+    if (!hit) {
+      push(spec);
+      return;
+    }
+    push({
+      ...spec,
+      ...hit,
+      watch: true,
+      market: spec.market,
+      marketLabel: spec.marketLabel,
+      name: hit.name || spec.name,
+      kind: spec.kind || hit.kind,
+      kindLabel: spec.kindLabel || hit.kindLabel,
+      cost: Number(hit.cost) > 0 ? hit.cost : spec.cost,
+      leverage: hit.leverage || spec.leverage,
+      side: hit.side || spec.side
+    });
+  });
+  [...live.values()].filter((q) => q && q.watch).forEach(push);
+  if (out.length) return out;
   if (quotes.length) return quotes;
   if (lastIndexQuote && (lastIndexQuote.name || lastIndexQuote.code)) return [lastIndexQuote];
   return [];
+}
+
+function cryptoBaseName(q) {
+  const code = String(q && q.code || '').toUpperCase();
+  if (q && q.name) return q.name;
+  if (code.startsWith('BTC') || code.startsWith('XBT')) return '比特币';
+  if (code.startsWith('ETH')) return '以太坊';
+  return q && q.code ? String(q.code) : '--';
+}
+
+function capsuleTitle(q) {
+  if (itemMarket(q) !== 'crypto') return q.name || q.code || '--';
+  const kind = q.kindLabel
+    || (String(q.code || '').toUpperCase().includes('PERP') ? '永续' : '现货');
+  const name = cryptoBaseName(q);
+  if (name.includes('永续') || name.includes('现货')) return name;
+  return `${name}${kind}`;
 }
 
 function capsuleItemHtml(q) {
@@ -777,18 +917,23 @@ function capsuleItemHtml(q) {
   const secId = q.secId || rowSecId(q);
   const flash = flashSecIds.has(secId) ? ' alert-flash' : '';
   const mkt = q.marketLabel ? `<span class="cap-mkt">${escapeHtml(q.marketLabel)}</span>` : '';
-  const star = q.watch ? '<span class="cap-star" aria-hidden="true">★</span>' : '';
   return `<div class="capsule-item${flash}${costHtml ? ' has-cost' : ''}" data-secid="${escapeHtml(secId)}">
-    <span class="cap-name">${mkt}${nameCellHtml(q.name || q.code, rowCodeLabel(q) || q.code)}${star}</span>
+    <span class="cap-name">${mkt}<span class="name-text">${escapeHtml(capsuleTitle(q))}</span></span>
     <span class="cap-price${costHtml ? ' has-cost' : ''}"><span class="price-now">${price}</span>${costHtml}</span>
     <span class="cap-pct ${cls}">${pctText}</span>
   </div>`;
 }
 
+function capsuleItemHeight() {
+  const item = capsuleTrackEl && capsuleTrackEl.querySelector('.capsule-item');
+  const h = item && item.getBoundingClientRect().height;
+  return h > 0 ? h : CAPSULE_ITEM_H;
+}
+
 function applyCapsuleOffset(animate) {
   if (!capsuleTrackEl) return;
   capsuleTrackEl.style.transition = animate ? `transform ${CAPSULE_ANIM_MS}ms ease` : 'none';
-  capsuleTrackEl.style.transform = `translateY(${-capsuleIndex * CAPSULE_ITEM_H}px)`;
+  capsuleTrackEl.style.transform = `translateY(${-capsuleIndex * capsuleItemHeight()}px)`;
 }
 
 function fillCapsuleTrack() {
@@ -858,6 +1003,8 @@ function applyCapsule(on) {
   hideAlertPanel();
   hideSrcMenu();
   hideCtxMenu();
+  placeAlertButton();
+  applyWatchSpecs(savedCfg);
   if (capsuleMode) {
     showCapsuleItem(false);
     stopCapsuleRotate();
@@ -1233,6 +1380,11 @@ window.addEventListener('wheel', (e) => {
     }
     return;
   }
+  if (isCapsuleMode() && alertPanelOpen()) {
+    if (alertListEl && alertListEl.contains(e.target)) return;
+    e.preventDefault();
+    return;
+  }
   if (isCapsuleMode()) {
     e.preventDefault();
     cycleCapsule(e.deltaY > 0 ? 1 : -1);
@@ -1303,6 +1455,16 @@ listEl.addEventListener('click', (e) => {
   window.stockApi.toggleWatch(code).then((res) => {
     const q = quotes.find((item) => rowCode(item) === code);
     if (q) q.watch = !!(res && res.watch);
+    if (savedCfg) {
+      const key = currentMarket === 'crypto' ? 'cryptoStocks' : currentMarket === 'us' ? 'usStocks' : 'stocks';
+      const list = Array.isArray(savedCfg[key]) ? savedCfg[key] : [];
+      const item = list.find((row) => rowCode(row) === code);
+      if (item) {
+        if (res && res.watch) item.watch = true;
+        else delete item.watch;
+      }
+      applyWatchSpecs(savedCfg);
+    }
     render();
   }).catch(() => {});
 }, true);
@@ -1382,6 +1544,7 @@ window.addEventListener('mouseout', (e) => {
 
 if (capsuleEl) {
   capsuleEl.addEventListener('dblclick', (e) => {
+    if (e.target.closest && (e.target.closest('#alert-btn') || e.target.closest('#alert-panel'))) return;
     e.stopPropagation();
     window.stockApi.toggleCapsule().then(applyCapsule).catch(() => {});
   });
@@ -1447,6 +1610,11 @@ if (scaleBtn) {
 
 window.stockApi.onScaleChanged((scale) => applyScaleLabel(scale));
 window.stockApi.onCapsuleChanged((on) => applyCapsule(on));
+if (window.stockApi.onCapsuleAlertsChanged) {
+  window.stockApi.onCapsuleAlertsChanged((on) => {
+    if (alertBtn) alertBtn.classList.toggle('open', !!on);
+  });
+}
 window.stockApi.getConfig().then((cfg) => {
   savedCfg = cfg || null;
   clickThroughPref = !!(cfg && cfg.clickThrough);
@@ -1454,6 +1622,7 @@ window.stockApi.getConfig().then((cfg) => {
   applyMarket(cfg && cfg.market);
   applyProvider(cfg && cfg.quoteProvider);
   applyScaleLabel(cfg && cfg.scale);
+  applyWatchSpecs(cfg);
   applyCapsule(!!(cfg && cfg.capsuleMode));
 });
 window.stockApi.getAlerts().then(applyAlerts).catch(() => {});

@@ -87,8 +87,10 @@ const SESSION_GAP_MAX_MS = 24 * 60 * 60 * 1000;
 
 const WINDOW_WIDTH = 368;
 const WINDOW_HEIGHT = 292;
-const CAPSULE_WIDTH = 320;
+const CAPSULE_WIDTH = 360;
 const CAPSULE_HEIGHT = 48;
+const ALERT_POP_HEIGHT = 188;
+let alertPopWin = null;
 const SCALE_MIN = 0.7;
 const SCALE_MAX = 1.6;
 const SCALE_STEP = 0.05;
@@ -187,6 +189,7 @@ function applyWindowScale() {
   } catch (_) {
     /* ignore */
   }
+  placeAlertPop();
   return s;
 }
 
@@ -205,9 +208,147 @@ function nudgeScale(dir) {
   return setScale(currentScale() + step);
 }
 
+function alertPopSize() {
+  const s = currentScale();
+  return {
+    width: Math.round(CAPSULE_WIDTH * s),
+    height: Math.round(ALERT_POP_HEIGHT * s)
+  };
+}
+
+function isAlertPopOpen() {
+  return !!(alertPopWin && !alertPopWin.isDestroyed() && alertPopWin.isVisible());
+}
+
+function hideAlertPop() {
+  if (alertPopWin && !alertPopWin.isDestroyed() && alertPopWin.isVisible()) {
+    alertPopWin.hide();
+  }
+  if (win && !win.isDestroyed()) {
+    try {
+      win.webContents.send('capsule-alerts-changed', false);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+}
+
+function placeAlertPop() {
+  if (!alertPopWin || alertPopWin.isDestroyed() || !win || win.isDestroyed()) return;
+  const s = currentScale();
+  const size = alertPopSize();
+  const b = win.getBounds();
+  const gap = Math.round(8 * s);
+  const area = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea;
+  let x = b.x;
+  let y = b.y + b.height + gap;
+  if (y + size.height > area.y + area.height) y = b.y - size.height - gap;
+  if (x + size.width > area.x + area.width) x = area.x + area.width - size.width;
+  x = Math.max(area.x, x);
+  y = Math.max(area.y, y);
+  alertPopWin.setBounds({ x: Math.round(x), y: Math.round(y), width: size.width, height: size.height });
+  try {
+    alertPopWin.webContents.setZoomFactor(s);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function pushAlertsToPop() {
+  if (!alertPopWin || alertPopWin.isDestroyed()) return;
+  try {
+    alertPopWin.webContents.send('alerts-changed', alertListPayload());
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function ensureAlertPop() {
+  if (alertPopWin && !alertPopWin.isDestroyed()) return alertPopWin;
+  const size = alertPopSize();
+  alertPopWin = new BrowserWindow({
+    width: size.width,
+    height: size.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    focusable: true,
+    fullscreenable: false,
+    minimizable: false,
+    maximizable: false,
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-alerts.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  alertPopWin.setAlwaysOnTop(true, 'screen-saver');
+  alertPopWin.setSkipTaskbar(true);
+  alertPopWin.loadFile(path.join(__dirname, 'renderer', 'alerts-pop.html'));
+  alertPopWin.on('blur', () => {
+    setImmediate(() => {
+      if (!alertPopWin || alertPopWin.isDestroyed() || alertPopWin.isFocused()) return;
+      if (win && !win.isDestroyed() && win.isFocused()) return;
+      hideAlertPop();
+    });
+  });
+  alertPopWin.on('closed', () => {
+    alertPopWin = null;
+  });
+  alertPopWin.webContents.on('did-finish-load', () => {
+    try {
+      alertPopWin.webContents.setZoomFactor(currentScale());
+    } catch (_) {
+      /* ignore */
+    }
+    pushAlertsToPop();
+  });
+  return alertPopWin;
+}
+
+function showAlertPop() {
+  if (!isCapsuleMode() || !win || win.isDestroyed()) {
+    hideAlertPop();
+    return false;
+  }
+  ensureAlertPop();
+  pushAlertsToPop();
+  placeAlertPop();
+  if (alertPopWin.webContents.isLoading()) {
+    alertPopWin.webContents.once('did-finish-load', () => {
+      if (!alertPopWin || alertPopWin.isDestroyed()) return;
+      pushAlertsToPop();
+      placeAlertPop();
+      alertPopWin.show();
+    });
+  } else {
+    alertPopWin.show();
+  }
+  if (win && !win.isDestroyed()) {
+    try {
+      win.webContents.send('capsule-alerts-changed', true);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  return true;
+}
+
+function setCapsuleAlertsOpen(on) {
+  if (!!on && isCapsuleMode()) return showAlertPop();
+  hideAlertPop();
+  return false;
+}
+
 function setCapsuleMode(on) {
   loadConfig();
   const next = !!on;
+  if (!next) hideAlertPop();
   if (config.capsuleMode === next) {
     applyWindowScale();
     if (win && !win.isDestroyed()) win.webContents.send('capsule-changed', next);
@@ -222,7 +363,15 @@ function setCapsuleMode(on) {
   return next;
 }
 
+let capsuleToggleLock = false;
+let capsuleShortcutLabel = 'Ctrl+Alt+C';
+
 function toggleCapsuleMode() {
+  if (capsuleToggleLock) return isCapsuleMode();
+  capsuleToggleLock = true;
+  setTimeout(() => {
+    capsuleToggleLock = false;
+  }, 250);
   return setCapsuleMode(!isCapsuleMode());
 }
 
@@ -593,16 +742,17 @@ function capsuleWatchQuotes() {
     watchedItems(m).forEach((item) => {
       const key = quoteCostKey(item.code, m);
       const q = byCode.get(key);
+      const inst = m === 'crypto' ? parseCryptoInstrument(item.code) : null;
       const base = q ? { ...q } : { code: item.code, name: '', price: null, pct: null };
       if (item.cost > 0) base.cost = item.cost;
       if (item.leverage > 0) base.leverage = item.leverage;
       if (item.side) base.side = item.side;
-      if (m === 'crypto') {
-        const inst = parseCryptoInstrument(item.code);
-        if (inst) {
-          if (!base.kind) base.kind = inst.kind;
-          if (!base.kindLabel) base.kindLabel = inst.kind === 'perp' ? '永续' : '现货';
-        }
+      if (inst) {
+        if (!base.name) base.name = inst.name;
+        if (!base.code) base.code = inst.code;
+        if (!base.secId) base.secId = inst.secId;
+        if (!base.kind) base.kind = inst.kind;
+        if (!base.kindLabel) base.kindLabel = inst.kindName;
       }
       base.watch = true;
       base.market = m;
@@ -1415,13 +1565,18 @@ function unreadAlertCount() {
 }
 
 function alertListPayload() {
-  return { items: alertLog, unread: unreadAlertCount() };
+  return {
+    items: alertLog,
+    unread: unreadAlertCount(),
+    theme: config && config.theme === 'moon' ? 'moon' : 'sun'
+  };
 }
 
 function sendAlertList() {
   if (win && !win.isDestroyed()) {
     win.webContents.send('alerts-changed', alertListPayload());
   }
+  pushAlertsToPop();
   updateTray();
   syncAlertNag();
 }
@@ -1962,6 +2117,7 @@ function hideWidget() {
   if (!win || win.isDestroyed()) return;
   savePosition();
   pointerOver = false;
+  hideAlertPop();
   win.webContents.send('widget-reset');
   win.hide();
   updateTray();
@@ -2084,7 +2240,7 @@ function updateTray() {
         }))
       },
       {
-        label: '胶囊模式',
+        label: `胶囊模式（${capsuleShortcutLabel}）`,
         type: 'checkbox',
         checked: isCapsuleMode(),
         click: (item) => setCapsuleMode(!!item.checked)
@@ -2155,6 +2311,9 @@ function watchDevReload() {
       console.log('[stock-widget] 热更新：刷新界面');
       win.webContents.reloadIgnoringCache();
     }
+    if (alertPopWin && !alertPopWin.isDestroyed()) {
+      alertPopWin.webContents.reloadIgnoringCache();
+    }
   }, 250);
   const relaunchApp = debounce(() => {
     console.log('[stock-widget] 热更新：重启主进程');
@@ -2174,6 +2333,7 @@ function watchDevReload() {
   const watched = [
     path.join(__dirname, 'main.js'),
     path.join(__dirname, 'preload.js'),
+    path.join(__dirname, 'preload-alerts.js'),
     path.join(__dirname, 'icon.png'),
     path.join(__dirname, 'stocks.json'),
     ...listFiles(path.join(__dirname, 'renderer')),
@@ -2187,6 +2347,7 @@ function watchDevReload() {
     const latest = [
       path.join(__dirname, 'main.js'),
       path.join(__dirname, 'preload.js'),
+      path.join(__dirname, 'preload-alerts.js'),
       path.join(__dirname, 'icon.png'),
       path.join(__dirname, 'stocks.json'),
       ...listFiles(path.join(__dirname, 'renderer')),
@@ -2240,8 +2401,47 @@ function registerShortcuts() {
   globalShortcut.register('CommandOrControl+Shift+R', () => {
     reloadAll();
   });
-  globalShortcut.register('CommandOrControl+Shift+C', () => {
-    toggleCapsuleMode();
+  const capsuleKeys = [
+    ['CommandOrControl+Alt+C', 'Ctrl+Alt+C'],
+    ['CommandOrControl+Shift+C', 'Ctrl+Shift+C'],
+    ['CommandOrControl+Alt+G', 'Ctrl+Alt+G']
+  ];
+  let bound = false;
+  capsuleKeys.forEach(([acc, label]) => {
+    if (bound) return;
+    const ok = globalShortcut.register(acc, () => toggleCapsuleMode());
+    if (ok) {
+      capsuleShortcutLabel = label;
+      bound = true;
+      console.log('[stock-widget] 胶囊快捷键', label);
+      return;
+    }
+    console.warn('[stock-widget] 快捷键不可用:', label);
+  });
+  if (!bound) {
+    capsuleShortcutLabel = 'Ctrl+Alt+C';
+    console.warn('[stock-widget] 胶囊全局快捷键注册失败，点插件后再按 Ctrl+Alt+C，或用托盘');
+  }
+  updateTray();
+}
+
+function bindWindowKeys(w) {
+  if (!w || w.isDestroyed()) return;
+  w.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.isAutoRepeat) return;
+    const key = String(input.key || '').toLowerCase();
+    if (key !== 'c' && key !== 'g') return;
+    const ctrl = !!(input.control || input.meta);
+    if (!ctrl) return;
+    if (input.alt && !input.shift && (key === 'c' || key === 'g')) {
+      event.preventDefault();
+      toggleCapsuleMode();
+      return;
+    }
+    if (input.shift && !input.alt && key === 'c') {
+      event.preventDefault();
+      toggleCapsuleMode();
+    }
   });
 }
 
@@ -2273,6 +2473,7 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.setAlwaysOnTop(true, 'screen-saver');
+  bindWindowKeys(win);
 
   win.webContents.on('did-finish-load', () => {
     try {
@@ -2322,6 +2523,7 @@ ipcMain.handle('nudge-scale', (_, dir) => nudgeScale(dir));
 ipcMain.handle('set-scale', (_, next) => setScale(next));
 ipcMain.handle('toggle-capsule', () => toggleCapsuleMode());
 ipcMain.handle('set-capsule', (_, on) => setCapsuleMode(!!on));
+ipcMain.handle('set-capsule-alerts', (_, on) => setCapsuleAlertsOpen(!!on));
 
 ipcMain.handle('stock-order-info', (_, code) => {
   loadConfig();
@@ -2383,6 +2585,7 @@ ipcMain.on('move-window', (_, dx, dy) => {
   const [x, y] = win.getPosition();
   win.setPosition(Math.round(x + dx), Math.round(y + dy));
   scheduleSavePosition();
+  placeAlertPop();
 });
 
 if (process.platform === 'win32') {
@@ -2436,6 +2639,11 @@ app.on('will-quit', () => {
   stopTrayBlink();
   stopAlertNag();
   hideAlertOverlay();
+  hideAlertPop();
+  if (alertPopWin && !alertPopWin.isDestroyed()) {
+    try { alertPopWin.destroy(); } catch (_) { /* ignore */ }
+  }
+  alertPopWin = null;
   clearTimeout(testAlertTimer);
   testAlertTimer = null;
   toastWins.forEach((w) => {

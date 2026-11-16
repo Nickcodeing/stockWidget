@@ -21,6 +21,7 @@
       "main.js",
       "preload.js",
       "preload-toast.js",
+      "preload-alerts.js",
       "lib/**/*",
       "stocks.example.json",
       "icon.png",

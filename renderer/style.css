@@ -743,9 +743,32 @@ html.capsule #panel {
 }
 
 html.capsule #capsule {
-  display: block;
-  height: 100%;
+  display: flex;
+  align-items: center;
+  height: 48px;
   overflow: hidden;
+}
+
+html.capsule #capsule-window {
+  flex: 1;
+  min-width: 0;
+  height: 48px;
+  overflow: hidden;
+}
+
+html.capsule #capsule-track {
+  height: auto;
+  overflow: visible;
+}
+
+html.capsule #alert-btn {
+  position: static;
+  transform: none;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin: 0 8px 0 0;
+  align-self: center;
 }
 
 #capsule-track {
@@ -754,11 +777,14 @@ html.capsule #capsule {
 
 .capsule-item {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(108px, 1.25fr) minmax(56px, 0.7fr);
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
   align-items: center;
   gap: 8px;
   height: 48px;
-  padding: 0 16px;
+  min-height: 48px;
+  max-height: 48px;
+  overflow: hidden;
+  padding: 0 8px 0 14px;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
@@ -766,15 +792,17 @@ html.capsule #capsule {
 #capsule .cap-name {
   min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   display: flex;
   align-items: baseline;
   gap: 4px;
 }
 
 #capsule .cap-name .name-text {
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 #capsule .cap-name .name-code {
@@ -805,11 +833,13 @@ html.capsule #capsule {
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 #capsule .cap-price.has-cost {
   align-items: flex-end;
-  min-width: 0;
+  width: max-content;
+  min-width: max-content;
 }
 
 #capsule .cap-price.has-cost .price-now {
@@ -817,9 +847,10 @@ html.capsule #capsule {
 }
 
 #capsule .price-cost {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 html.capsule .capsule-item.alert-flash {

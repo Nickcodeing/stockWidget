@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="sun">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html {
+      --up: #ff6b6e;
+      --down: #3ddc84;
+      --text: #eef1f6;
+      --text-dim: rgba(234, 238, 245, 0.62);
+      --text-soft: rgba(234, 238, 245, 0.78);
+      --status: rgba(186, 214, 255, 0.92);
+      --menu-hover: rgba(255, 255, 255, 0.1);
+      --glass-1: rgba(255, 255, 255, 0.18);
+      --glass-2: rgba(255, 255, 255, 0.04);
+      --glass-3: rgba(12, 18, 28, 0.18);
+      --glass-base: rgba(16, 22, 34, 0.42);
+      --glass-border: rgba(255, 255, 255, 0.28);
+      --glass-inset-top: rgba(255, 255, 255, 0.38);
+      --glass-inset-bottom: rgba(255, 255, 255, 0.06);
+    }
+    html[data-theme="moon"] {
+      --text: #e8edf5;
+      --text-dim: rgba(210, 218, 230, 0.55);
+      --text-soft: rgba(210, 218, 230, 0.72);
+      --status: rgba(160, 190, 230, 0.88);
+      --menu-hover: rgba(255, 255, 255, 0.08);
+      --glass-1: rgba(255, 255, 255, 0.06);
+      --glass-2: rgba(255, 255, 255, 0.02);
+      --glass-3: rgba(0, 0, 0, 0.42);
+      --glass-base: rgba(5, 7, 12, 0.86);
+      --glass-border: rgba(255, 255, 255, 0.16);
+      --glass-inset-top: rgba(255, 255, 255, 0.16);
+      --glass-inset-bottom: rgba(0, 0, 0, 0.35);
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: "Microsoft YaHei", sans-serif;
+      user-select: none;
+    }
+    #card {
+      height: 100%;
+      padding: 8px 8px 6px;
+      border-radius: 18px;
+      color: var(--text);
+      background:
+        linear-gradient(165deg, var(--glass-1) 0%, var(--glass-2) 42%, var(--glass-3) 100%),
+        var(--glass-base);
+      border: 1px solid var(--glass-border);
+      box-shadow:
+        inset 0 1px 0 var(--glass-inset-top),
+        inset 0 -1px 0 var(--glass-inset-bottom);
+      backdrop-filter: blur(22px) saturate(180%);
+      -webkit-backdrop-filter: blur(22px) saturate(180%);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 2px 8px 6px;
+      font-size: 12px;
+    }
+    #read-all {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: var(--status);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    #read-all:disabled { opacity: 0.34; cursor: default; }
+    #list {
+      flex: 1;
+      overflow-x: hidden;
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+    #list::-webkit-scrollbar { width: 0; height: 0; }
+    .empty {
+      padding: 22px 8px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .alert-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      padding: 6px 8px;
+      border-radius: 10px;
+      font: inherit;
+      font-size: 12px;
+      line-height: 1.35;
+      cursor: pointer;
+    }
+    .alert-item:hover { background: var(--menu-hover); }
+    .alert-item.read { opacity: 0.5; }
+    .alert-dot {
+      flex: 0 0 6px;
+      width: 6px;
+      height: 6px;
+      margin-top: 6px;
+      border-radius: 50%;
+      background: #f5c518;
+    }
+    .alert-item.read .alert-dot { background: rgba(234, 238, 245, 0.22); }
+    .alert-main { min-width: 0; flex: 1; }
+    .alert-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .alert-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .alert-time {
+      flex: 0 0 auto;
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+    .alert-body {
+      margin-top: 2px;
+      font-size: 11px;
+      color: var(--text-soft);
+      font-variant-numeric: tabular-nums;
+    }
+    .alert-move { margin-right: 6px; }
+    .alert-item[data-market="cn"] .alert-move.up,
+    .alert-item[data-market="us"] .alert-move.down,
+    .alert-item[data-market="crypto"] .alert-move.down { color: #ff6b6e; }
+    .alert-item[data-market="cn"] .alert-move.down,
+    .alert-item[data-market="us"] .alert-move.up,
+    .alert-item[data-market="crypto"] .alert-move.up { color: #3ddc84; }
+  </style>
+</head>
+<body>
+  <div id="card">
+    <div id="head">
+      <span>提醒</span>
+      <button type="button" id="read-all">全部已读</button>
+    </div>
+    <div id="list"></div>
+  </div>
+  <script src="alerts-pop.js"></script>
+</body>
+</html>
